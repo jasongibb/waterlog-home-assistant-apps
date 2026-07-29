@@ -18,7 +18,7 @@ waterlog_url: https://waterlog.fish
 waterlog_credential: paste-the-show-once-credential
 streams:
   - stream_id: 11111111-1111-4111-8111-111111111111
-    entity_id: sensor.reefato_temperature
+    entity_id: sensor.aquarium_temperature
 upload_interval_seconds: 1800
 batch_size: 250
 request_timeout_seconds: 20
@@ -30,9 +30,10 @@ log_level: INFO
 
 Omit `unit_override` so the bridge uses the entity's live
 `unit_of_measurement` attribute and Waterlog can reject mismatches. Add an
-override only when Home Assistant does not publish a trustworthy unit and you
-have verified that the numeric value is already expressed in the configured
-stream unit. An override labels a value; it does not convert it.
+override only when Home Assistant publishes no unit and you have verified that
+the numeric value is already expressed in the configured stream unit. An
+override labels a value; it does not convert it or safely relabel a measurement
+from another unit.
 
 The app rejects non-HTTPS Waterlog URLs unless `allow_insecure_http` is enabled.
 That option exists only for local development and must remain off for production.

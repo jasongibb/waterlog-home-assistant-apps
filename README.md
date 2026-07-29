@@ -23,3 +23,17 @@ The app source and operator documentation are in the
 [`waterlog-bridge`](./waterlog-bridge) directory. Container releases are built
 for `aarch64` and `amd64` and published under the exact app version at
 `ghcr.io/jasongibb/waterlog-home-assistant-bridge`.
+
+## Community integrations
+
+Any Home Assistant integration that exposes numeric sensor entities can feed
+Waterlog through the same source and stream mapping, including community
+integrations maintained by their own authors.
+
+Setup recipes belong in this repository's [GitHub
+Discussions](https://github.com/jasongibb/waterlog-home-assistant-apps/discussions)
+so community-specific steps stay separate from Waterlog's supported bridge and
+ingest documentation.
+
+Standing disclaimer: not supported by Waterlog, may be subject to vendor terms,
+never for life-support control.

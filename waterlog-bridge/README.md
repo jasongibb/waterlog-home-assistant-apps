@@ -241,7 +241,16 @@ acknowledgements.
 | Daily status quota | New status identities received since 00:00 UTC are independently capped by that same source `daily_sample_quota` value. Samples and statuses have two equal ceilings, **not one shared pool**. |
 | Future skew | `observedAt` and `occurredAt` may be at most five minutes after server time. `sourceUpdatedAt` also obeys the bounds described above. |
 | Ordinary backfill | Up to 31 days before server time. |
-| Extended backfill | Ingest honors a per-source extended-backfill window of up to 90 days before server time, matching raw retention. Enabling this window is not currently self-service: there is no Admin control. Without operator action, the effective backfill limit is the ordinary 31 days. |
+| Extended backfill | Ingest honors a per-source extended-backfill window of up to 90 days before server time. This is an ingest-acceptance limit independent of raw retention. Enabling this window is not currently self-service: there is no Admin control. Without operator action, the effective backfill limit is the ordinary 31 days. |
+
+Backfill acceptance and retention are separate contracts. Waterlog does not
+automatically age-delete accepted raw telemetry samples. Status events and
+derived hourly/daily rollups keep independent retention policies, and server-side
+materialization remains bounded. Retaining raw samples does not make bridge,
+client, chart, or MCP responses unbounded; each surface keeps its own window,
+batch, and response limits. Storage growth and compute are monitored against
+the current budget, and any retention-policy revisit is based on measured
+usage rather than a speculative age cutoff.
 
 If adding the new identities in either daily ledger would exceed its ceiling,
 the whole ingest transaction returns `429`; no sample or status from that

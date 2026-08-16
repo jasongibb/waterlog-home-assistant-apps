@@ -1,0 +1,78 @@
+blueprint:
+  name: HA-Hydros sustained-outage recovery guard
+  description: >-
+    Reload HA-Hydros once when every selected MQTT Health entity has reported
+    offline for the configured duration. Select the MQTT Health sensor from
+    every HYDROS collective. Recovery stays latched until at least one
+    collective returns online, then holds the configured cooldown. This is a
+    household workaround, not a life-support control or alert path.
+  domain: automation
+  author: Waterlog
+  source_url: https://github.com/jasongibb/waterlog-home-assistant-apps/blob/main/blueprints/automation/waterlog/hydros_recovery_guard.yaml
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    watched_entities:
+      name: HA-Hydros MQTT Health entities
+      description: >-
+        Select exactly the sensor named MQTT Health from every HYDROS
+        collective. Do not select a probe, output, alert, or mode entity.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - integration: hydros
+              domain: sensor
+    outage_duration:
+      name: Sustained outage duration
+      description: Every selected MQTT Health sensor must remain offline this long.
+      default:
+        minutes: 3
+      selector:
+        duration:
+    cooldown:
+      name: Recovery cooldown
+      description: Hold recovery this long after a collective returns online.
+      default:
+        minutes: 10
+      selector:
+        duration:
+
+variables:
+  watched_health_entities: !input watched_entities
+
+triggers:
+  - alias: Every collective has remained offline
+    trigger: state
+    entity_id: !input watched_entities
+    to: "offline"
+    for: !input outage_duration
+
+conditions:
+  - alias: Confirm every collective has remained offline
+    condition: state
+    entity_id: !input watched_entities
+    state: "offline"
+    for: !input outage_duration
+
+actions:
+  - alias: Reload the HA-Hydros config entry
+    continue_on_error: true
+    action: homeassistant.reload_config_entry
+    target:
+      entity_id: !input watched_entities
+
+  - alias: Latch until at least one collective recovers
+    wait_template: >-
+      {% set selected = expand(watched_health_entities) %}
+      {% set online = selected
+        | selectattr('state', 'eq', 'online')
+        | list %}
+      {{ (selected | count) == (watched_health_entities | count)
+        and (online | count) > 0 }}
+
+  - alias: Hold the recovery cooldown
+    delay: !input cooldown
+
+mode: single
+max_exceeded: silent

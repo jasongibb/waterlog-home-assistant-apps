@@ -24,6 +24,36 @@ The app source and operator documentation are in the
 for `aarch64` and `amd64` and published under the exact app version at
 `ghcr.io/jasongibb/waterlog-home-assistant-bridge`.
 
+## Optional HA-Hydros recovery guard
+
+The community HA-Hydros integration can occasionally leave all of its entities
+unavailable until its configuration entry is reloaded. The optional
+[HA-Hydros recovery blueprint](./blueprints/automation/waterlog/hydros_recovery_guard.yaml)
+performs one integration reload after every selected HA-Hydros **MQTT Health**
+sensor has reported `offline` for a configured duration.
+
+[Import the blueprint into Home Assistant](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fjasongibb%2Fwaterlog-home-assistant-apps%2Fmain%2Fblueprints%2Fautomation%2Fwaterlog%2Fhydros_recovery_guard.yaml),
+then create an automation from it. Select exactly the sensor named **MQTT
+Health** from every HYDROS collective. Do not select a probe, output, alert, or
+mode entity. The defaults require every selected health sensor to remain
+`offline` for three minutes before reloading.
+
+Only the explicit MQTT Health state `offline` counts as an outage; startup-style
+`unknown` states are intentionally ignored. If the selected health sensors are
+already offline when the automation is created, reload HA-Hydros once manually.
+The guard then protects future online-to-offline transitions.
+
+The guard makes one attempt per continuous outage and stays latched until at
+least one collective reports `online`, then holds a ten-minute cooldown. If the
+reload does not restore HA-Hydros, it deliberately remains latched instead of
+creating a reload loop; inspect Home Assistant and reload the integration
+manually. The automation can be disabled or deleted without changing Waterlog
+or the Waterlog Bridge.
+
+This is a household recovery workaround for an unofficial community
+integration. It is not a life-support controller or alert path. Keep HYDROS and
+Home Assistant safety alerts enabled.
+
 ## Community integrations
 
 Any Home Assistant integration that exposes numeric sensor entities can feed

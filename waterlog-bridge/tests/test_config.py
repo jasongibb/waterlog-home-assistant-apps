@@ -67,175 +67,45 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "at least one stream"):
             self.load(options)
 
+    def test_removed_hydros_options_do_not_change_home_assistant_config(self) -> None:
+        options = valid_options()
+        options.update(
+            {
+                "hydros_provider_key": None,
+                "hydros_devices": [],
+                "hydros_streams": [],
+            }
+        )
+        config = self.load(options)
+        self.assertEqual(len(config.streams), 1)
+        self.assertEqual(config.streams[0].entity_id, "sensor.reefato_temperature")
+
+    def test_removed_hydros_options_cannot_replace_home_assistant_streams(self) -> None:
+        options = valid_options()
+        options.update(
+            {
+                "streams": [],
+                "hydros_provider_key": "provider-key-not-used-by-0.2.1",
+                "hydros_devices": [
+                    {"name": "lagoon-launch", "device_key": "device-key"}
+                ],
+                "hydros_streams": [
+                    {
+                        "stream_id": STREAM_ID,
+                        "device": "lagoon-launch",
+                        "input": "pH",
+                        "unit": "pH",
+                    }
+                ],
+            }
+        )
+        with self.assertRaisesRegex(ConfigError, "at least one stream"):
+            self.load(options)
+
     def test_sample_interval_is_fixed_at_five_minutes(self) -> None:
         options = valid_options()
         options["sample_interval_seconds"] = 600
         with self.assertRaisesRegex(ConfigError, "between 300 and 300"):
-            self.load(options)
-
-    # -- HYDROS options -------------------------------------------------------
-
-    def hydros_options(self) -> dict[str, object]:
-        options = valid_options()
-        options["hydros_provider_key"] = "provider-secret-key-value"
-        options["hydros_devices"] = [{"name": "lagoon-launch", "device_key": "a" * 20}]
-        options["hydros_streams"] = [
-            {
-                "stream_id": "33333333-3333-4333-8333-333333333333",
-                "device": "lagoon-launch",
-                "input": "pH",
-                "unit": "pH",
-            }
-        ]
-        return options
-
-    def test_loads_valid_hydros_options(self) -> None:
-        config = self.load(self.hydros_options())
-        self.assertEqual(config.hydros_provider_key, "provider-secret-key-value")
-        self.assertEqual(len(config.hydros_devices), 1)
-        self.assertEqual(config.hydros_devices[0].name, "lagoon-launch")
-        self.assertEqual(len(config.hydros_streams), 1)
-        self.assertEqual(config.hydros_streams[0].input_name, "pH")
-        self.assertEqual(config.hydros_streams[0].unit, "pH")
-        self.assertNotIn("provider-secret-key-value", repr(config))
-        self.assertNotIn("a" * 20, repr(config))
-
-    def test_ha_streams_may_be_empty_when_hydros_streams_exist(self) -> None:
-        options = self.hydros_options()
-        options["streams"] = []
-        config = self.load(options)
-        self.assertEqual(config.streams, ())
-        self.assertEqual(len(config.hydros_streams), 1)
-
-    def test_both_stream_lists_empty_is_still_rejected(self) -> None:
-        options = valid_options()
-        options["streams"] = []
-        with self.assertRaisesRegex(ConfigError, "at least one stream"):
-            self.load(options)
-
-    def test_hydros_provider_key_required_when_devices_configured(self) -> None:
-        options = self.hydros_options()
-        del options["hydros_provider_key"]
-        with self.assertRaisesRegex(ConfigError, "hydros_provider_key is required"):
-            self.load(options)
-
-    def test_hydros_provider_key_blank_is_rejected_when_devices_configured(self) -> None:
-        options = self.hydros_options()
-        options["hydros_provider_key"] = "   "
-        with self.assertRaisesRegex(ConfigError, "hydros_provider_key is required"):
-            self.load(options)
-
-    def test_hydros_provider_key_control_characters_rejected(self) -> None:
-        options = self.hydros_options()
-        options["hydros_provider_key"] = "provider\nsecret-key-value"
-        with self.assertRaisesRegex(ConfigError, "invalid whitespace or control characters"):
-            self.load(options)
-
-    def test_hydros_device_name_regex_is_enforced(self) -> None:
-        options = self.hydros_options()
-        options["hydros_devices"] = [{"name": "Lagoon Launch", "device_key": "a" * 20}]
-        with self.assertRaisesRegex(ConfigError, "hydros_devices\\[0\\].name"):
-            self.load(options)
-
-    def test_hydros_device_names_must_be_unique(self) -> None:
-        options = self.hydros_options()
-        options["hydros_devices"] = [
-            {"name": "lagoon-launch", "device_key": "a" * 20},
-            {"name": "lagoon-launch", "device_key": "b" * 20},
-        ]
-        with self.assertRaisesRegex(ConfigError, "hydros_devices\\[\\].name values must be unique"):
-            self.load(options)
-
-    def test_hydros_device_key_minimum_length_is_enforced(self) -> None:
-        options = self.hydros_options()
-        options["hydros_devices"] = [{"name": "lagoon-launch", "device_key": "short"}]
-        with self.assertRaisesRegex(ConfigError, "device_key must be at least 16 characters"):
-            self.load(options)
-
-    def test_hydros_device_key_rejects_control_characters(self) -> None:
-        options = self.hydros_options()
-        options["hydros_devices"] = [
-            {"name": "lagoon-launch", "device_key": "a" * 10 + "\t" + "a" * 10}
-        ]
-        with self.assertRaisesRegex(ConfigError, "invalid whitespace or control characters"):
-            self.load(options)
-
-    def test_hydros_devices_limit_of_ten_is_enforced(self) -> None:
-        options = self.hydros_options()
-        options["hydros_devices"] = [
-            {"name": f"device-{index}", "device_key": "a" * 20} for index in range(11)
-        ]
-        options["hydros_streams"] = [
-            {
-                "stream_id": "33333333-3333-4333-8333-333333333333",
-                "device": "device-0",
-                "input": "pH",
-                "unit": "pH",
-            }
-        ]
-        with self.assertRaisesRegex(ConfigError, "no more than 10 hydros_devices"):
-            self.load(options)
-
-    def test_hydros_stream_id_must_be_unique_across_ha_and_hydros_lists(self) -> None:
-        options = self.hydros_options()
-        options["hydros_streams"][0]["stream_id"] = STREAM_ID  # collides with the HA stream
-        with self.assertRaisesRegex(ConfigError, "stream_id values must be unique"):
-            self.load(options)
-
-    def test_hydros_stream_device_must_reference_a_defined_device(self) -> None:
-        options = self.hydros_options()
-        options["hydros_streams"][0]["device"] = "not-configured"
-        with self.assertRaisesRegex(ConfigError, "must name a configured hydros device"):
-            self.load(options)
-
-    def test_hydros_stream_input_length_is_enforced(self) -> None:
-        options = self.hydros_options()
-        options["hydros_streams"][0]["input"] = ""
-        with self.assertRaisesRegex(ConfigError, "input must be 1-100 characters"):
-            self.load(options)
-
-    def test_hydros_stream_input_rejects_control_characters(self) -> None:
-        options = self.hydros_options()
-        options["hydros_streams"][0]["input"] = "pH\x01"
-        with self.assertRaisesRegex(ConfigError, "input must be 1-100 characters"):
-            self.load(options)
-
-    def test_hydros_stream_value_field_regex_is_enforced(self) -> None:
-        options = self.hydros_options()
-        options["hydros_streams"][0]["value_field"] = "9probeValue"
-        with self.assertRaisesRegex(ConfigError, "value_field must match"):
-            self.load(options)
-
-    def test_hydros_stream_value_field_override_loads(self) -> None:
-        options = self.hydros_options()
-        options["hydros_streams"][0]["value_field"] = "probeRawValue"
-        config = self.load(options)
-        self.assertEqual(config.hydros_streams[0].value_field, "probeRawValue")
-
-    def test_hydros_stream_unit_is_required(self) -> None:
-        options = self.hydros_options()
-        del options["hydros_streams"][0]["unit"]
-        with self.assertRaisesRegex(ConfigError, "unit is required"):
-            self.load(options)
-
-    def test_hydros_stream_unit_rejects_control_characters(self) -> None:
-        options = self.hydros_options()
-        options["hydros_streams"][0]["unit"] = "p\x00H"
-        with self.assertRaisesRegex(ConfigError, "unit is required"):
-            self.load(options)
-
-    def test_hydros_streams_limit_of_100_is_enforced(self) -> None:
-        options = self.hydros_options()
-        options["hydros_streams"] = [
-            {
-                "stream_id": f"44444444-4444-4444-8444-4444444444{index:02d}",
-                "device": "lagoon-launch",
-                "input": f"Sensor {index}",
-                "unit": "pH",
-            }
-            for index in range(101)
-        ]
-        with self.assertRaisesRegex(ConfigError, "no more than 100 hydros_streams"):
             self.load(options)
 
     def test_redaction_filter_removes_bearer_and_known_secret(self) -> None:

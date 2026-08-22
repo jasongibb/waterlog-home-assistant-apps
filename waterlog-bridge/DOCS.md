@@ -4,12 +4,6 @@ Waterlog Bridge reads the Home Assistant numeric entities you explicitly map and
 sends observations to Waterlog. It does not call Home Assistant services and
 cannot control heaters, pumps, outlets, ATOs, or other equipment.
 
-It can optionally also poll the official CoralVue HYDROS public REST API
-directly (a second, independent source), for households whose controller is
-not bridged through Home Assistant. HYDROS polling is read-only: the bridge
-never writes an override or command, and HYDROS device keys should always be
-created **Read only** in the HYDROS app.
-
 ## Before configuring the app
 
 In Waterlog, create a Home Assistant telemetry source, create one stream for each
@@ -44,52 +38,6 @@ from another unit.
 The app rejects non-HTTPS Waterlog URLs unless `allow_insecure_http` is enabled.
 That option exists only for local development and must remain off for production.
 
-### HYDROS configuration (optional)
-
-Add a HYDROS provider key, one entry per HYDROS device, and one stream per
-Input you want to send to Waterlog. `streams` may be empty when `hydros_streams`
-is used instead, as long as at least one stream is configured across the two:
-
-```yaml
-hydros_provider_key: paste-your-hydros-provider-key
-hydros_devices:
-  - name: lagoon-launch
-    device_key: paste-a-read-only-device-key
-hydros_streams:
-  - stream_id: 22222222-2222-4222-8222-222222222222
-    device: lagoon-launch
-    input: "pH"
-    unit: "pH"
-  - stream_id: 33333333-3333-4333-8333-333333333333
-    device: lagoon-launch
-    input: "Temperature 1"
-    unit: "°C"
-```
-
-- `name` is a local handle (lowercase letters, digits, `_`/`-`) used only to
-  link a `hydros_streams` entry to its `hydros_devices` entry; it is not sent
-  to HYDROS or Waterlog.
-- `device_key` must be created in the HYDROS app (Device Properties → Manage
-  API Keys) with **Read only** permission. The bridge never writes to HYDROS.
-- `input` is the exact Input name from the HYDROS state document (case- and
-  space-sensitive, 1–100 characters); renaming a sensor in the HYDROS app
-  breaks the mapping until the name is restored or the stream is recreated.
-- An authentication rejection (bad key pair, or a poll token rejected twice)
-  pauses that device for 45 minutes before the bridge tries again, keeping
-  session starts far inside the vendor's 5/hour budget. During the pause the
-  device's streams report `hydros_auth_rejected`.
-- `value_field` is optional. Omit it to use the first present of
-  `probeValue`, `senseValue`, `value`, `i10Value`; set it only to override
-  that default for one Input.
-- `unit` is required — HYDROS state documents carry no units. It must
-  byte-match the incoming unit configured for the matching Waterlog stream.
-
-Run `python scripts/hydros_probe.py --provider-key ... --device-key ...`
-before configuring the add-on to confirm the key pair works and to get a
-ready-to-paste `hydros_streams` stanza per discovered Input, including the
-Waterlog stream `externalId` (`deviceId/Input name`) to use when creating
-each stream in Waterlog.
-
 ## Delivery and failure behavior
 
 - Each mapped entity is read through Home Assistant's internal, authenticated
@@ -105,11 +53,6 @@ each stream in Waterlog.
 - HTTP 401 or 403 disables uploads and emits a critical log message. Sampling
   continues into the bounded local queue. Repair the Waterlog credential and
   restart the app.
-- Home Assistant and HYDROS are independent sources: a failure in one (a bad
-  HYDROS key, HYDROS cloud outage, and so on) does not stop the other from
-  polling. A HYDROS device with no cached state reports `unavailable` /
-  `hydros_no_state` for every one of its mapped streams; that is expected
-  while the device is offline or a session has not yet started.
 - Waterlog must explicitly acknowledge every item. Accepted and duplicate items
   are deleted; rejected and conflicting items are retained as quarantined rows.
 - Queue rows older than the configured retention period or beyond the item cap

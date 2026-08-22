@@ -1,8 +1,8 @@
 {
   "schema": "waterlog.bridge-release/v1",
-  "version": "0.2.0",
-  "source_sha": "29df98f073884aef507d01b567799b6de53b725b",
-  "source_tag": "sha-29df98f073884aef507d01b567799b6de53b725b",
+  "version": "0.2.1",
+  "source_sha": "f6b2bcefea3f02b33cdf8cdca2f0c861d27982d6",
+  "source_tag": "sha-f6b2bcefea3f02b33cdf8cdca2f0c861d27982d6",
   "image": "ghcr.io/jasongibb/waterlog-home-assistant-bridge",
-  "image_digest": "sha256:ea6b2bb1482bc9e009810e4462c165a88601503721885faaa4e38a3a1e054b91"
+  "image_digest": "sha256:075d0b6a4ecebb7a216428aa08891ba7073a885023d63fbe0344d05e9fa21f04"
 }

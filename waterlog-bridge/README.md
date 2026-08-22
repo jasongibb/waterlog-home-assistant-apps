@@ -3,20 +3,27 @@
 This directory is a self-contained Home Assistant OS app (formerly called an
 add-on). It is Waterlog's vendor-neutral acquisition adapter: any Home Assistant
 integration that exposes a numeric sensor entity can use the same stream
-mapping.
+mapping. It optionally also polls the official CoralVue HYDROS public REST
+API directly, as a second, independent source alongside (or instead of) Home
+Assistant — see [`docs/hydros-connector-design.md`](../docs/hydros-connector-design.md)
+for the full design.
 
 The bridge deliberately has no Home Assistant service-write code. Its only Home
 Assistant permission is `homeassistant_api: true`, used to `GET` configured
 entity states through `http://supervisor/core/api` with the injected
 `SUPERVISOR_TOKEN`. The Waterlog credential is used only in an Authorization
-header to `POST /api/ingest/telemetry`.
+header to `POST /api/ingest/telemetry`. HYDROS polling is similarly read-only:
+the bridge never calls `PUT /device/overrides` or any command endpoint, and
+HYDROS device keys should always be created **Read only** in the HYDROS app.
 
 ## Package layout
 
 - `config.yaml` — Supervisor app metadata, options, and schema.
 - `Dockerfile` / `run.sh` — multi-architecture container entry point.
-- `src/waterlog_bridge` — configuration, read-only HA client, SQLite outbox,
-  uploader, and scheduler.
+- `src/waterlog_bridge` — configuration, read-only HA and HYDROS clients,
+  SQLite outbox, uploader, and scheduler.
+- `scripts/hydros_probe.py` — standalone CLI that verifies a HYDROS
+  provider/device key pair before it is pasted into the add-on options.
 - `DOCS.md` — installation-time user documentation.
 - `tests` — deterministic standard-library unit tests.
 

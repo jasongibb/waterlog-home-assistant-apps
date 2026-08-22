@@ -9,13 +9,14 @@ from urllib.parse import quote
 
 from .http import HttpTransport, TransportError
 from .models import EntityReading, StreamConfig
+from .sources import SourceAuthenticationError, SourceTransportError
 
 
-class HomeAssistantTransportError(ConnectionError):
+class HomeAssistantTransportError(SourceTransportError):
     pass
 
 
-class HomeAssistantAuthenticationError(PermissionError):
+class HomeAssistantAuthenticationError(SourceAuthenticationError):
     pass
 
 

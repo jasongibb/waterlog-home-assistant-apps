@@ -6,20 +6,93 @@ import logging
 import random
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
-from .home_assistant import (
-    HomeAssistantAuthenticationError,
-    HomeAssistantClient,
-    HomeAssistantTransportError,
-)
-from .models import BridgeConfig
+from .home_assistant import HomeAssistantClient
+from .hydros import HydrosClient
+from .models import BridgeConfig, EntityReading, HydrosStreamConfig, StreamConfig
 from .queue import DurableQueue
+from .sources import SourceAuthenticationError, SourceTransportError
 from .uploader import WaterlogUploader
 
 
 LOGGER = logging.getLogger(__name__)
+
+# The pre-multi-source code used these exact codes/messages for an
+# HA-only bridge; a config with only Home Assistant streams must keep
+# emitting them unchanged.
+_HOME_ASSISTANT_UNREACHABLE_CODE = "home_assistant_unreachable"
+_HOME_ASSISTANT_PARTIAL_CODE = "partial_home_assistant_failure"
+
+# Multi-source (or non-HA sole source) configs get honest generic codes
+# instead of borrowing the HA-specific ones.
+_GENERIC_UNREACHABLE_CODE = "source_unreachable"
+_GENERIC_PARTIAL_CODE = "partial_source_failure"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceGroup:
+    """One vendor source polled once per cycle.
+
+    ``read`` is a bound method (e.g. ``HomeAssistantClient.read_entity`` or
+    ``HydrosClient.read_input``) rather than a shared "adapter" interface,
+    since the two vendor clients do not share a read method name; wrapping
+    them in a factory (``home_assistant_group`` / ``hydros_group`` below)
+    keeps that detail out of ``BridgeService`` and its callers.
+    """
+
+    name: str
+    read: Callable[[Any], EntityReading]
+    streams: tuple[Any, ...]
+    auth_code: str
+    unreachable_code: str
+    auth_rejected_message: str
+    unreachable_message: str
+    unavailable_message: str
+    invalid_message: str
+    auth_log_message: str
+    begin_cycle: Callable[[], None] | None = None
+
+
+def home_assistant_group(
+    client: HomeAssistantClient, streams: tuple[StreamConfig, ...]
+) -> SourceGroup:
+    return SourceGroup(
+        name="Home Assistant",
+        read=client.read_entity,
+        streams=streams,
+        auth_code="home_assistant_auth_rejected",
+        unreachable_code=_HOME_ASSISTANT_UNREACHABLE_CODE,
+        auth_rejected_message="Home Assistant API authentication failed",
+        unreachable_message="Home Assistant entity state could not be read",
+        unavailable_message="Home Assistant entity is unavailable",
+        invalid_message="Home Assistant entity did not contain a usable numeric value",
+        auth_log_message=(
+            "Home Assistant rejected the Supervisor token; no entity values were sampled"
+        ),
+    )
+
+
+def hydros_group(
+    client: HydrosClient, streams: tuple[HydrosStreamConfig, ...]
+) -> SourceGroup:
+    return SourceGroup(
+        name="HYDROS",
+        read=client.read_input,
+        streams=streams,
+        auth_code="hydros_auth_rejected",
+        unreachable_code="hydros_unreachable",
+        auth_rejected_message="HYDROS rejected the provider/device key",
+        unreachable_message="HYDROS device state could not be read",
+        unavailable_message="HYDROS device state is unavailable",
+        invalid_message="HYDROS input did not contain a usable numeric value",
+        auth_log_message=(
+            "HYDROS rejected the provider/device key; no HYDROS values were sampled"
+        ),
+        begin_cycle=client.begin_cycle,
+    )
 
 
 class BridgeService:
@@ -27,7 +100,7 @@ class BridgeService:
         self,
         config: BridgeConfig,
         queue: DurableQueue,
-        home_assistant: HomeAssistantClient,
+        groups: tuple[SourceGroup, ...],
         uploader: WaterlogUploader,
         *,
         clock: Callable[[], float] = time.time,
@@ -36,7 +109,7 @@ class BridgeService:
     ) -> None:
         self._config = config
         self._queue = queue
-        self._home_assistant = home_assistant
+        self._groups = groups
         self._uploader = uploader
         self._clock = clock
         self._jitter = jitter
@@ -46,42 +119,92 @@ class BridgeService:
         occurred_at = _timestamp(now)
         sample_count = 0
         unhealthy_count = 0
-        transport_failures = 0
+        failed_stream_counts: list[int] = []
 
-        for index, stream in enumerate(self._config.streams):
+        for group in self._groups:
+            if group.begin_cycle is not None:
+                group.begin_cycle()
+            group_samples, group_unhealthy, group_failed = self._poll_group(
+                group, occurred_at=occurred_at, now=now
+            )
+            sample_count += group_samples
+            unhealthy_count += group_unhealthy
+            failed_stream_counts.append(group_failed)
+            LOGGER.info(
+                "%s poll queued %s samples; %s streams were unavailable or invalid",
+                group.name,
+                group_samples,
+                group_unhealthy,
+            )
+
+        total_streams = sum(len(group.streams) for group in self._groups)
+        total_failed = sum(failed_stream_counts)
+
+        if total_failed == 0:
+            self._queue.enqueue_bridge_status(
+                occurred_at=occurred_at, status="ok", now=now
+            )
+        else:
+            sole_group_is_home_assistant = (
+                len(self._groups) == 1
+                and self._groups[0].unreachable_code == _HOME_ASSISTANT_UNREACHABLE_CODE
+            )
+            if sole_group_is_home_assistant:
+                full_outage_code = _HOME_ASSISTANT_UNREACHABLE_CODE
+                partial_code = _HOME_ASSISTANT_PARTIAL_CODE
+                message = "Home Assistant state polling encountered a transport failure"
+            else:
+                full_outage_code = _GENERIC_UNREACHABLE_CODE
+                partial_code = _GENERIC_PARTIAL_CODE
+                message = "Telemetry source polling encountered a transport failure"
+            code = full_outage_code if total_failed == total_streams else partial_code
+            self._queue.enqueue_bridge_status(
+                occurred_at=occurred_at,
+                status="error",
+                code=code,
+                message=message,
+                now=now,
+            )
+
+        return sample_count, unhealthy_count
+
+    def _poll_group(
+        self, group: SourceGroup, *, occurred_at: str, now: float
+    ) -> tuple[int, int, int]:
+        sample_count = 0
+        unhealthy_count = 0
+        streams = group.streams
+
+        for index, stream in enumerate(streams):
             try:
-                reading = self._home_assistant.read_entity(stream)
-            except HomeAssistantAuthenticationError:
-                LOGGER.critical(
-                    "Home Assistant rejected the Supervisor token; no entity values were sampled"
-                )
-                for remaining in self._config.streams[index:]:
+                reading = group.read(stream)
+            except SourceAuthenticationError:
+                LOGGER.critical(group.auth_log_message)
+                for remaining in streams[index:]:
                     self._queue.enqueue_stream_status_if_changed(
                         stream_id=remaining.stream_id,
                         occurred_at=occurred_at,
                         status="error",
-                        code="home_assistant_auth_rejected",
-                        message="Home Assistant API authentication failed",
+                        code=group.auth_code,
+                        message=group.auth_rejected_message,
                         now=now,
                     )
                     unhealthy_count += 1
-                transport_failures += len(self._config.streams) - index
-                break
-            except HomeAssistantTransportError:
-                # A proxy/network failure is installation-wide. Avoid multiplying
-                # the configured timeout by every stream while Core is offline.
-                for remaining in self._config.streams[index:]:
+                return sample_count, unhealthy_count, len(streams) - index
+            except SourceTransportError:
+                # A transport failure is source-wide for this cycle. Avoid
+                # multiplying the configured timeout by every remaining stream.
+                for remaining in streams[index:]:
                     self._queue.enqueue_stream_status_if_changed(
                         stream_id=remaining.stream_id,
                         occurred_at=occurred_at,
                         status="error",
-                        code="home_assistant_unreachable",
-                        message="Home Assistant entity state could not be read",
+                        code=group.unreachable_code,
+                        message=group.unreachable_message,
                         now=now,
                     )
                     unhealthy_count += 1
-                transport_failures += len(self._config.streams) - index
-                break
+                return sample_count, unhealthy_count, len(streams) - index
 
             if reading.status == "ok":
                 assert reading.value is not None and reading.unit is not None
@@ -107,40 +230,15 @@ class BridgeService:
                     status=reading.status,
                     code=reading.code,
                     message=(
-                        "Home Assistant entity is unavailable"
+                        group.unavailable_message
                         if reading.status == "unavailable"
-                        else "Home Assistant entity did not contain a usable numeric value"
+                        else group.invalid_message
                     ),
                     now=now,
                 )
                 unhealthy_count += 1
 
-        if transport_failures:
-            code = (
-                "home_assistant_unreachable"
-                if transport_failures == len(self._config.streams)
-                else "partial_home_assistant_failure"
-            )
-            self._queue.enqueue_bridge_status(
-                occurred_at=occurred_at,
-                status="error",
-                code=code,
-                message="Home Assistant state polling encountered a transport failure",
-                now=now,
-            )
-        else:
-            # A bridge heartbeat is intentionally queued every sample cycle. It proves
-            # the Pi is healthy even when every mapped probe is unavailable.
-            self._queue.enqueue_bridge_status(
-                occurred_at=occurred_at, status="ok", now=now
-            )
-
-        LOGGER.info(
-            "Home Assistant poll queued %s samples; %s streams were unavailable or invalid",
-            sample_count,
-            unhealthy_count,
-        )
-        return sample_count, unhealthy_count
+        return sample_count, unhealthy_count, 0
 
     def enforce_queue_limits(self, *, now: float) -> int:
         expired, overflow = self._queue.enforce_limits(
@@ -172,10 +270,11 @@ class BridgeService:
         auth_blocked = False
         last_auth_reminder = 0.0
 
+        total_streams = sum(len(group.streams) for group in self._groups)
         stats = self._queue.stats()
         LOGGER.info(
             "Waterlog Bridge started with %s stream mappings, %s queued items, and %s quarantined items",
-            len(self._config.streams),
+            total_streams,
             stats.pending,
             stats.quarantined,
         )

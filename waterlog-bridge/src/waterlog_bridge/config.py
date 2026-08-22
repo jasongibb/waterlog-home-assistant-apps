@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from .models import BridgeConfig, StreamConfig
+from .models import BridgeConfig, HydrosDeviceConfig, HydrosStreamConfig, StreamConfig
 
 
 class ConfigError(ValueError):
@@ -18,6 +18,16 @@ class ConfigError(ValueError):
 
 _ENTITY_ID = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
+_HYDROS_DEVICE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_HYDROS_VALUE_FIELD = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,63}$")
+
+
+def _no_control_characters(value: str) -> bool:
+    return not any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _no_control_or_whitespace(value: str) -> bool:
+    return not any(ord(character) < 33 or ord(character) == 127 for character in value)
 
 
 def _integer(
@@ -95,9 +105,9 @@ def load_config(path: str | Path) -> BridgeConfig:
     if any(ord(character) < 33 or ord(character) == 127 for character in credential):
         raise ConfigError("waterlog_credential contains invalid whitespace or control characters")
 
-    stream_options = options.get("streams")
-    if not isinstance(stream_options, list) or not stream_options:
-        raise ConfigError("at least one stream mapping is required")
+    stream_options = options.get("streams", [])
+    if not isinstance(stream_options, list):
+        raise ConfigError("streams must be a list")
     if len(stream_options) > 100:
         raise ConfigError("no more than 100 stream mappings are allowed")
 
@@ -140,6 +150,112 @@ def load_config(path: str | Path) -> BridgeConfig:
         entity_ids.add(entity_id)
         streams.append(StreamConfig(stream_id, entity_id, unit_override))
 
+    # -- HYDROS options (design doc §4.1) -----------------------------------
+
+    hydros_provider_key_value = options.get("hydros_provider_key")
+    hydros_devices_options = options.get("hydros_devices", [])
+    if not isinstance(hydros_devices_options, list):
+        raise ConfigError("hydros_devices must be a list")
+    if len(hydros_devices_options) > 10:
+        raise ConfigError("no more than 10 hydros_devices entries are allowed")
+
+    hydros_provider_key: str | None = None
+    if hydros_devices_options:
+        if not isinstance(hydros_provider_key_value, str) or not hydros_provider_key_value.strip():
+            raise ConfigError(
+                "hydros_provider_key is required when hydros_devices is configured"
+            )
+        if len(hydros_provider_key_value) > 2_048:
+            raise ConfigError("hydros_provider_key is too long")
+        hydros_provider_key = hydros_provider_key_value.strip()
+        if not _no_control_or_whitespace(hydros_provider_key):
+            raise ConfigError(
+                "hydros_provider_key contains invalid whitespace or control characters"
+            )
+
+    hydros_devices: list[HydrosDeviceConfig] = []
+    hydros_device_names: set[str] = set()
+    for index, item in enumerate(hydros_devices_options):
+        label = f"hydros_devices[{index}]"
+        if not isinstance(item, dict):
+            raise ConfigError(f"{label} must be an object")
+        name = item.get("name")
+        if not isinstance(name, str) or not _HYDROS_DEVICE_NAME.fullmatch(name):
+            raise ConfigError(
+                f"{label}.name must match ^[a-z0-9][a-z0-9_-]{{0,31}}$"
+            )
+        if name in hydros_device_names:
+            raise ConfigError("hydros_devices[].name values must be unique")
+        device_key = item.get("device_key")
+        if (
+            not isinstance(device_key, str)
+            or len(device_key) < 16
+            or len(device_key) > 2_048
+        ):
+            raise ConfigError(f"{label}.device_key must be at least 16 characters")
+        if not _no_control_or_whitespace(device_key):
+            raise ConfigError(
+                f"{label}.device_key contains invalid whitespace or control characters"
+            )
+        hydros_device_names.add(name)
+        hydros_devices.append(HydrosDeviceConfig(name=name, device_key=device_key))
+
+    hydros_stream_options = options.get("hydros_streams", [])
+    if not isinstance(hydros_stream_options, list):
+        raise ConfigError("hydros_streams must be a list")
+    if len(hydros_stream_options) > 100:
+        raise ConfigError("no more than 100 hydros_streams entries are allowed")
+
+    hydros_streams: list[HydrosStreamConfig] = []
+    for index, item in enumerate(hydros_stream_options):
+        label = f"hydros_streams[{index}]"
+        if not isinstance(item, dict):
+            raise ConfigError(f"{label} must be an object")
+        stream_id = _uuid(item.get("stream_id"), f"{label}.stream_id")
+        device = item.get("device")
+        if not isinstance(device, str) or device not in hydros_device_names:
+            raise ConfigError(f"{label}.device must name a configured hydros device")
+        input_name = item.get("input")
+        if (
+            not isinstance(input_name, str)
+            or not 1 <= len(input_name) <= 100
+            or not _no_control_characters(input_name)
+        ):
+            raise ConfigError(
+                f"{label}.input must be 1-100 characters with no control characters"
+            )
+        value_field = item.get("value_field")
+        if value_field is None or value_field == "":
+            value_field = None
+        elif not isinstance(value_field, str) or not _HYDROS_VALUE_FIELD.fullmatch(value_field):
+            raise ConfigError(
+                f"{label}.value_field must match ^[A-Za-z][A-Za-z0-9]{{0,63}}$"
+            )
+        unit = item.get("unit")
+        if (
+            not isinstance(unit, str)
+            or not 1 <= len(unit) <= 32
+            or not _no_control_characters(unit)
+        ):
+            raise ConfigError(
+                f"{label}.unit is required and must be 1-32 characters with no control characters"
+            )
+        if stream_id in stream_ids:
+            raise ConfigError("stream_id values must be unique")
+        stream_ids.add(stream_id)
+        hydros_streams.append(
+            HydrosStreamConfig(
+                stream_id=stream_id,
+                device=device,
+                input_name=input_name,
+                unit=unit,
+                value_field=value_field,
+            )
+        )
+
+    if not streams and not hydros_streams:
+        raise ConfigError("at least one stream mapping is required")
+
     log_level = options.get("log_level", "INFO")
     if not isinstance(log_level, str) or log_level.upper() not in _LOG_LEVELS:
         raise ConfigError("log_level must be DEBUG, INFO, WARNING, or ERROR")
@@ -148,6 +264,9 @@ def load_config(path: str | Path) -> BridgeConfig:
         waterlog_url=waterlog_url,
         credential=credential,
         streams=tuple(streams),
+        hydros_provider_key=hydros_provider_key,
+        hydros_devices=tuple(hydros_devices),
+        hydros_streams=tuple(hydros_streams),
         sample_interval_seconds=_integer(
             options, "sample_interval_seconds", 300, 300, 300
         ),

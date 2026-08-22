@@ -16,6 +16,25 @@ class StreamConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class HydrosDeviceConfig:
+    """One HYDROS device, identified by a local handle and its read-only device key."""
+
+    name: str
+    device_key: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class HydrosStreamConfig:
+    """One HYDROS Input mapped to one immutable Waterlog stream."""
+
+    stream_id: str
+    device: str
+    input_name: str
+    unit: str
+    value_field: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class BridgeConfig:
     """Validated app configuration loaded from Home Assistant options."""
 
@@ -30,6 +49,9 @@ class BridgeConfig:
     max_queue_items: int = 100_000
     allow_insecure_http: bool = False
     log_level: str = "INFO"
+    hydros_provider_key: str | None = field(default=None, repr=False)
+    hydros_devices: tuple[HydrosDeviceConfig, ...] = ()
+    hydros_streams: tuple[HydrosStreamConfig, ...] = ()
 
     @property
     def ingest_url(self) -> str:

@@ -11,9 +11,10 @@ from pathlib import Path
 
 from .config import ConfigError, load_config
 from .home_assistant import HomeAssistantClient
+from .hydros import HydrosClient
 from .logging_utils import configure_logging
 from .queue import DurableQueue
-from .service import BridgeService
+from .service import BridgeService, SourceGroup, home_assistant_group, hydros_group
 from .uploader import WaterlogUploader
 
 
@@ -38,9 +39,19 @@ def main() -> int:
         )
         return 2
 
-    # Redact the local token too, even though application code never logs it.
+    # Redact the local token and every HYDROS secret too, even though
+    # application code never logs them.
+    hydros_secrets = tuple(
+        secret
+        for secret in (
+            config.hydros_provider_key,
+            *(device.device_key for device in config.hydros_devices),
+        )
+        if secret
+    )
     configure_logging(
-        config.log_level, secrets=(config.credential, supervisor_token)
+        config.log_level,
+        secrets=(config.credential, supervisor_token, *hydros_secrets),
     )
 
     data_directory = Path(os.environ.get("WATERLOG_DATA_DIR", "/data"))
@@ -55,14 +66,25 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    home_assistant = HomeAssistantClient(
-        supervisor_token, timeout_seconds=config.request_timeout_seconds
-    )
+    groups: list[SourceGroup] = []
+    if config.streams:
+        home_assistant = HomeAssistantClient(
+            supervisor_token, timeout_seconds=config.request_timeout_seconds
+        )
+        groups.append(home_assistant_group(home_assistant, config.streams))
+    if config.hydros_streams:
+        hydros_client = HydrosClient(
+            config.hydros_provider_key or "",
+            config.hydros_devices,
+            timeout_seconds=config.request_timeout_seconds,
+        )
+        groups.append(hydros_group(hydros_client, config.hydros_streams))
+
     uploader = WaterlogUploader(config, queue)
     service = BridgeService(
         config,
         queue,
-        home_assistant,
+        tuple(groups),
         uploader,
         stop_event=stop_event,
     )

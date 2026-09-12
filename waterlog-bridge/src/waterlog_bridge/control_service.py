@@ -412,11 +412,14 @@ class ControlService:
             self.store.set_command_status(command.command_id, "completed")
             self.store.set_session(command.tank_id, "active", mode=command.mode, now=now)
             self._report(command.tank_id, request_status="completed")
-        except HomeAssistantControlError:
+        except HomeAssistantControlError as error:
+            LOGGER.error(
+                "Tank mode entry failed; restoring durable baselines: %s", error
+            )
             self.store.set_command_status(command.command_id, "failed")
             self.store.set_session(command.tank_id, "restoring", mode="normal", error="entry_failed", now=now)
-            self._restore(command.tank_id, now=now, immediate=True)
             self._report(command.tank_id, request_status="failed", error="entry_failed")
+            self._restore(command.tank_id, now=now, immediate=True)
 
     def _normal(self, command: ControlCommand, now: float) -> None:
         session = next((row for row in self.store.sessions() if row["tank_id"] == command.tank_id), None)
@@ -495,7 +498,15 @@ class ControlService:
                 state = self.ha.state(local.entity_id)
             except HomeAssistantControlError:
                 state = "unavailable"
-            if state == item["baseline"]:
+            unresolved_write = (
+                (
+                    item["result"] is None
+                    and item["intent"] is not None
+                    and item["intent"] != item["baseline"]
+                )
+                or item["error_code"] == "restore_failed"
+            )
+            if state == item["baseline"] and not unresolved_write:
                 self.store.mark_result(tank_id, item["outlet_id"], "restored")
                 changed = True
                 continue
@@ -530,7 +541,7 @@ class ControlService:
                     changed = True
                     continue
             try:
-                self.store.mark_intent(tank_id, item["outlet_id"], item["baseline"])
+                self.store.mark_restore_pending(tank_id, item["outlet_id"])
                 if self.ha.set_state(local.entity_id, item["baseline"]) != item["baseline"]:
                     raise HomeAssistantControlError("restore readback failed")
                 self.store.mark_result(tank_id, item["outlet_id"], "restored")
@@ -550,10 +561,11 @@ class ControlService:
                 return
             status = self.store.command_status(session["command_id"])
             request_status = "failed" if status == "failed" else "completed"
+            final_error = session["error_code"] if status == "failed" else None
             if status == "accepted":
                 self.store.set_command_status(session["command_id"], "completed")
             self.store.set_session(tank_id, "normal", mode="normal", error=None, now=now)
-            self._report(tank_id, request_status=request_status)
+            self._report(tank_id, request_status=request_status, error=final_error)
             self.store.remove_session(tank_id)
             return
         refreshed = list(self.store.obligations(tank_id))

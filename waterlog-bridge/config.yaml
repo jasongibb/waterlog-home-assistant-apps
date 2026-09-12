@@ -1,5 +1,5 @@
 name: Waterlog Bridge
-version: "0.3.1"
+version: "0.3.2"
 slug: waterlog_bridge
 description: Send monitoring data and run explicitly enrolled tank modes safely.
 url: https://github.com/jasongibb/waterlog-home-assistant-apps/tree/main/waterlog-bridge

@@ -357,6 +357,13 @@ class ControlStore:
                 (result, error, tank_id, outlet_id),
             )
 
+    def mark_restore_pending(self, tank_id: str, outlet_id: str) -> None:
+        with self.db:
+            self.db.execute(
+                "UPDATE obligations SET result=NULL WHERE tank_id=? AND outlet_id=?",
+                (tank_id, outlet_id),
+            )
+
     def retry_obligation(
         self,
         tank_id: str,

@@ -20,12 +20,39 @@ from .ha_registry import RegistryError, discover_allowlisted
 from .home_assistant import HomeAssistantClient
 from .home_assistant_control import HomeAssistantControl
 from .logging_utils import configure_logging
+from .models import BridgeConfig
 from .queue import DurableQueue
 from .service import BridgeService
 from .uploader import WaterlogUploader
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _run_telemetry(
+    config: BridgeConfig,
+    data_directory: Path,
+    supervisor_token: str,
+    stop_event: threading.Event,
+) -> None:
+    # SQLite connections are thread-affine. Create and close the queue in the
+    # same thread that runs the telemetry service.
+    queue = DurableQueue(data_directory / "waterlog-bridge.sqlite3")
+    try:
+        queue.reset_health_edges()
+        service = BridgeService(
+            config,
+            queue,
+            HomeAssistantClient(
+                supervisor_token,
+                timeout_seconds=config.request_timeout_seconds,
+            ),
+            WaterlogUploader(config, queue),
+            stop_event=stop_event,
+        )
+        service.run()
+    finally:
+        queue.close()
 
 
 def main() -> int:
@@ -62,30 +89,21 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    queue = None
     control_store = None
     threads: list[threading.Thread] = []
     try:
         if config.telemetry_enabled:
-            queue = DurableQueue(data_directory / "waterlog-bridge.sqlite3")
-            queue.reset_health_edges()
-            service = BridgeService(
-                config,
-                queue,
-                HomeAssistantClient(
-                    supervisor_token, timeout_seconds=config.request_timeout_seconds
-                ),
-                WaterlogUploader(config, queue),
-                stop_event=stop_event,
-            )
             if config.control_enabled:
                 thread = threading.Thread(
-                    target=service.run, name="waterlog-telemetry", daemon=True
+                    target=_run_telemetry,
+                    args=(config, data_directory, supervisor_token, stop_event),
+                    name="waterlog-telemetry",
+                    daemon=True,
                 )
                 thread.start()
                 threads.append(thread)
             else:
-                service.run()
+                _run_telemetry(config, data_directory, supervisor_token, stop_event)
         if config.control_enabled:
             identity_path = data_directory / "control-installation-id"
             had_identity = identity_path.exists()
@@ -133,7 +151,9 @@ def main() -> int:
             ControlService(
                 control_store,
                 ControlClient(config.waterlog_url, config.control_credential or ""),
-                HomeAssistantControl(supervisor_token),
+                HomeAssistantControl(
+                    supervisor_token, timeout_seconds=config.request_timeout_seconds
+                ),
                 installation_id,
                 inventory,
                 inventory_provider=refresh_control_inventory,
@@ -149,8 +169,6 @@ def main() -> int:
         stop_event.set()
         for thread in threads:
             thread.join(timeout=10)
-        if queue is not None:
-            queue.close()
         if control_store is not None:
             control_store.close()
     return 0

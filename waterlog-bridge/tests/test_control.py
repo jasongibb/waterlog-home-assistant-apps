@@ -13,8 +13,12 @@ from waterlog_bridge.control_models import ControlCommand, ControlOutlet, Regist
 from waterlog_bridge.control_client import ControlAuthenticationError
 from waterlog_bridge.control_service import ControlService
 from waterlog_bridge.control_store import ControlStore, ControlStoreError
-from waterlog_bridge.home_assistant_control import HomeAssistantControlError
+from waterlog_bridge.home_assistant_control import (
+    HomeAssistantControl,
+    HomeAssistantControlError,
+)
 from waterlog_bridge.http import TransportError
+from waterlog_bridge.models import HttpResponse
 
 INSTALLATION = "10000000-0000-4000-8000-000000000001"
 TANK = "50000000-0000-4000-8000-000000000001"
@@ -851,6 +855,101 @@ class ControlExecutorTests(unittest.TestCase):
         self.assertEqual(ha.states, {"switch.pump": "on", "switch.heater": "on"})
         self.assertEqual(self.store.sessions(), [])
         self.assertEqual(self.store.reports()[-1]["requestStatus"], "failed")
+
+    def test_uncertain_applied_entry_write_is_explicitly_restored(self):
+        class AppliedHeaterOffThenTransportError:
+            def __init__(self):
+                self.physical = {"switch.pump": "on", "switch.heater": "on"}
+                self.posts = []
+
+            def get(self, url, *, headers, timeout):  # noqa: ANN001
+                return HttpResponse(
+                    200,
+                    {},
+                    json.dumps({"state": "on"}).encode(),
+                )
+
+            def post_json(self, url, *, headers, payload, timeout):  # noqa: ANN001
+                entity_id = payload["entity_id"]
+                state = "off" if url.endswith("/turn_off") else "on"
+                self.posts.append((entity_id, state))
+                self.physical[entity_id] = state
+                if entity_id == "switch.heater" and state == "off":
+                    raise TransportError("response lost after applied write")
+                return HttpResponse(200, {}, b"[]")
+
+        transport = AppliedHeaterOffThenTransportError()
+        ha = HomeAssistantControl("supervisor-secret", transport=transport)
+        service = self.service(ha)
+
+        with self.assertLogs(
+            "waterlog_bridge.control_service", level="ERROR"
+        ) as logs:
+            service.accept(command(now=self.now), self.now)
+
+        self.assertEqual(
+            transport.posts,
+            [("switch.heater", "off"), ("switch.heater", "on")],
+        )
+        self.assertEqual(transport.physical["switch.heater"], "on")
+        self.assertEqual(transport.physical["switch.pump"], "on")
+        self.assertEqual(self.store.sessions(), [])
+        reports = self.store.reports()
+        self.assertEqual(reports[-1]["phase"], "normal")
+        self.assertEqual(reports[-1]["requestStatus"], "failed")
+        self.assertEqual(reports[-1]["errorCode"], "entry_failed")
+        self.assertTrue(any("Tank mode entry failed" in line for line in logs.output))
+
+    def test_failed_compensation_remains_pending_until_confirmed_retry(self):
+        class AppliedOffThenFailedFirstCompensation:
+            def __init__(self):
+                self.physical = {"switch.pump": "on", "switch.heater": "on"}
+                self.posts = []
+                self.on_attempts = 0
+
+            def get(self, url, *, headers, timeout):  # noqa: ANN001
+                return HttpResponse(200, {}, json.dumps({"state": "on"}).encode())
+
+            def post_json(self, url, *, headers, payload, timeout):  # noqa: ANN001
+                entity_id = payload["entity_id"]
+                state = "off" if url.endswith("/turn_off") else "on"
+                self.posts.append((entity_id, state))
+                if state == "off":
+                    self.physical[entity_id] = "off"
+                    raise TransportError("response lost after applied write")
+                self.on_attempts += 1
+                if self.on_attempts == 1:
+                    raise TransportError("restore failed before apply")
+                self.physical[entity_id] = "on"
+                return HttpResponse(200, {}, b"[]")
+
+        transport = AppliedOffThenFailedFirstCompensation()
+        ha = HomeAssistantControl("supervisor-secret", transport=transport)
+        service = self.service(ha)
+
+        with self.assertLogs("waterlog_bridge.control_service", level="ERROR"):
+            service.accept(command(now=self.now), self.now)
+
+        self.assertEqual(transport.physical["switch.heater"], "off")
+        self.assertEqual(
+            transport.posts,
+            [("switch.heater", "off"), ("switch.heater", "on")],
+        )
+        pending = self.store.obligations(TANK)
+        self.assertEqual(len(pending), 2)
+        heater = next(item for item in pending if item["outlet_id"] == HEATER)
+        self.assertIsNone(heater["result"])
+        self.assertEqual(heater["intent"], "off")
+        self.assertEqual(heater["error_code"], "restore_failed")
+
+        self.now += 1
+        service = self.service(ha)
+        service.tick()
+
+        self.assertEqual(transport.posts[-1], ("switch.heater", "on"))
+        self.assertEqual(transport.physical["switch.heater"], "on")
+        self.assertEqual(transport.physical["switch.pump"], "on")
+        self.assertEqual(self.store.sessions(), [])
 
     def test_heater_only_mode_observes_dependency_without_switching_pump(self):
         ha = FakeHA({"switch.pump": "on", "switch.heater": "on"})

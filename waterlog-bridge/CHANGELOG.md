@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2
+
+- Wait for Home Assistant to confirm outlet changes during tank-mode commands.
+- Allow 15 seconds for switch service calls, including Tapo's device write and
+  refresh, while keeping individual state reads on their existing timeout.
+- Keep restoration pending after an uncertain switch operation until the
+  baseline is explicitly restored and confirmed. Preserve failed-entry reports.
+- Keep the monitoring database on its worker thread so enabling equipment
+  control does not interrupt monitoring.
+
 ## 0.3.1
 
 - Make telemetry and control credentials truly optional in the app schema so

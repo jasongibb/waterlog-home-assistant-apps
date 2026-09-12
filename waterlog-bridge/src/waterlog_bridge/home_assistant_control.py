@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
 from urllib.parse import quote
 
 from .http import HttpTransport, TransportError
@@ -20,11 +22,19 @@ class HomeAssistantControl:
         timeout_seconds: int = 5,
         transport: HttpTransport | None = None,
         core_api_url: str = "http://supervisor/core/api",
+        confirmation_timeout_seconds: float = 5.0,
+        confirmation_interval_seconds: float = 0.2,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._token = token
         self._timeout = timeout_seconds
         self._transport = transport or HttpTransport()
         self._base = core_api_url.rstrip("/")
+        self._confirmation_timeout = confirmation_timeout_seconds
+        self._confirmation_interval = confirmation_interval_seconds
+        self._monotonic = monotonic
+        self._sleep = sleep
 
     def state(self, entity_id: str) -> str:
         try:
@@ -63,7 +73,9 @@ class HomeAssistantControl:
                     "Accept": "application/json",
                 },
                 payload={"entity_id": entity_id},
-                timeout=self._timeout,
+                # TP-Link/Tapo control awaits a device write and then a delayed
+                # device refresh, each of which may use HA's five-second timeout.
+                timeout=max(15, self._timeout),
             )
         except TransportError as error:
             raise HomeAssistantControlError(
@@ -71,4 +83,16 @@ class HomeAssistantControl:
             ) from error
         if response.status not in {200, 201}:
             raise HomeAssistantControlError("Home Assistant rejected switch control")
-        return self.state(entity_id)
+        deadline = self._monotonic() + self._confirmation_timeout
+        while True:
+            try:
+                observed = self.state(entity_id)
+            except HomeAssistantControlError:
+                observed = "unavailable"
+            if observed == state:
+                return observed
+            if self._monotonic() >= deadline:
+                raise HomeAssistantControlError(
+                    "Home Assistant switch confirmation timed out"
+                )
+            self._sleep(self._confirmation_interval)

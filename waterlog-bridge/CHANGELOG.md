@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+- Make telemetry and control credentials truly optional in the app schema so
+  either independently optional mode can start without a null credential.
+- Monitoring installations can upgrade without creating a control credential.
+  If still using 0.3.0, set `waterlog_control_credential: ""` and
+  `control_entities: []` in Configuration → Edit in YAML to resume monitoring.
+
 ## 0.3.0
 
 - Add opt-in Feed/Normal/Water Change execution for explicitly allowlisted

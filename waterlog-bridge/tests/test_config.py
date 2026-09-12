@@ -43,6 +43,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.streams[0].stream_id, STREAM_ID)
         self.assertNotIn(SECRET, repr(config))
 
+    def test_empty_control_credential_disables_control(self) -> None:
+        options = valid_options()
+        options.update({"waterlog_control_credential": "", "control_entities": []})
+        config = self.load(options)
+        self.assertIsNone(config.control_credential)
+        self.assertFalse(config.control_enabled)
+
     def test_https_is_required_by_default(self) -> None:
         options = valid_options()
         options["waterlog_url"] = "http://waterlog.example"

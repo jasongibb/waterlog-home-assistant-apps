@@ -52,7 +52,9 @@ def load_config(path: str | Path) -> BridgeConfig:
     except ConfigError:
         raise
     except (OSError, json.JSONDecodeError) as error:
-        raise ConfigError("could not read a valid Home Assistant options file") from error
+        raise ConfigError(
+            "could not read a valid Home Assistant options file"
+        ) from error
 
     if not isinstance(options, dict):
         raise ConfigError("Home Assistant options must be a JSON object")
@@ -78,26 +80,35 @@ def load_config(path: str | Path) -> BridgeConfig:
     if parsed.scheme not in {"http", "https"} or not hostname:
         raise ConfigError("waterlog_url must be an absolute HTTP(S) URL")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ConfigError("waterlog_url cannot contain credentials, a query, or a fragment")
+        raise ConfigError(
+            "waterlog_url cannot contain credentials, a query, or a fragment"
+        )
     if parsed.path not in {"", "/"}:
         raise ConfigError("waterlog_url cannot contain a path")
     if parsed.scheme != "https" and not allow_insecure:
         raise ConfigError("waterlog_url must use HTTPS")
 
-    credential = options.get("waterlog_credential")
-    if (
-        not isinstance(credential, str)
-        or len(credential.strip()) < 16
-        or len(credential) > 2_048
+    credential_value = options.get("waterlog_credential")
+    credential: str | None
+    if credential_value is None or credential_value == "":
+        credential = None
+    elif (
+        isinstance(credential_value, str)
+        and 16 <= len(credential_value.strip()) <= 2_048
     ):
-        raise ConfigError("waterlog_credential is required and appears incomplete")
-    credential = credential.strip()
-    if any(ord(character) < 33 or ord(character) == 127 for character in credential):
-        raise ConfigError("waterlog_credential contains invalid whitespace or control characters")
+        credential = credential_value.strip()
+        if any(
+            ord(character) < 33 or ord(character) == 127 for character in credential
+        ):
+            raise ConfigError(
+                "waterlog_credential contains invalid whitespace or control characters"
+            )
+    else:
+        raise ConfigError("waterlog_credential appears incomplete")
 
     stream_options = options.get("streams")
-    if not isinstance(stream_options, list) or not stream_options:
-        raise ConfigError("at least one stream mapping is required")
+    if not isinstance(stream_options, list):
+        raise ConfigError("streams must be a list")
     if len(stream_options) > 100:
         raise ConfigError("no more than 100 stream mappings are allowed")
 
@@ -115,7 +126,9 @@ def load_config(path: str | Path) -> BridgeConfig:
             or len(entity_id) > 255
             or not _ENTITY_ID.fullmatch(entity_id.strip())
         ):
-            raise ConfigError(f"{label}.entity_id is not a valid Home Assistant entity ID")
+            raise ConfigError(
+                f"{label}.entity_id is not a valid Home Assistant entity ID"
+            )
         entity_id = entity_id.strip()
         unit_value = item.get("unit_override")
         unit_override: str | None
@@ -140,6 +153,51 @@ def load_config(path: str | Path) -> BridgeConfig:
         entity_ids.add(entity_id)
         streams.append(StreamConfig(stream_id, entity_id, unit_override))
 
+    control_credential_value = options.get("waterlog_control_credential")
+    control_credential: str | None
+    if control_credential_value is None or control_credential_value == "":
+        control_credential = None
+    elif (
+        isinstance(control_credential_value, str)
+        and 16 <= len(control_credential_value.strip()) <= 2_048
+    ):
+        control_credential = control_credential_value.strip()
+        if any(
+            ord(character) < 33 or ord(character) == 127
+            for character in control_credential
+        ):
+            raise ConfigError(
+                "waterlog_control_credential contains invalid whitespace or control characters"
+            )
+    else:
+        raise ConfigError("waterlog_control_credential appears incomplete")
+    raw_control_entities = options.get("control_entities", [])
+    if not isinstance(raw_control_entities, list) or len(raw_control_entities) > 64:
+        raise ConfigError("control_entities must contain at most 64 switch entity IDs")
+    control_entities: list[str] = []
+    for index, value in enumerate(raw_control_entities):
+        if not isinstance(value, str) or not re.fullmatch(
+            r"switch[.][a-z0-9_]+", value.strip()
+        ):
+            raise ConfigError(
+                f"control_entities[{index}] is not an individual switch entity ID"
+            )
+        if value.strip() in control_entities:
+            raise ConfigError("control entity IDs must be unique")
+        control_entities.append(value.strip())
+    if credential and not streams:
+        raise ConfigError("at least one stream is required with waterlog_credential")
+    if streams and not credential:
+        raise ConfigError("waterlog_credential is required with telemetry streams")
+    if bool(control_entities) != bool(control_credential):
+        raise ConfigError(
+            "control_entities and waterlog_control_credential must be configured together"
+        )
+    if not streams and not control_entities:
+        raise ConfigError(
+            "configure telemetry streams or explicitly allowlisted control entities"
+        )
+
     log_level = options.get("log_level", "INFO")
     if not isinstance(log_level, str) or log_level.upper() not in _LOG_LEVELS:
         raise ConfigError("log_level must be DEBUG, INFO, WARNING, or ERROR")
@@ -148,6 +206,8 @@ def load_config(path: str | Path) -> BridgeConfig:
         waterlog_url=waterlog_url,
         credential=credential,
         streams=tuple(streams),
+        control_credential=control_credential,
+        control_entities=tuple(control_entities),
         sample_interval_seconds=_integer(
             options, "sample_interval_seconds", 300, 300, 300
         ),
@@ -155,15 +215,9 @@ def load_config(path: str | Path) -> BridgeConfig:
             options, "upload_interval_seconds", 1800, 300, 7200
         ),
         batch_size=_integer(options, "batch_size", 250, 1, 500),
-        request_timeout_seconds=_integer(
-            options, "request_timeout_seconds", 20, 5, 60
-        ),
-        queue_retention_days=_integer(
-            options, "queue_retention_days", 30, 1, 30
-        ),
-        max_queue_items=_integer(
-            options, "max_queue_items", 100_000, 1_000, 500_000
-        ),
+        request_timeout_seconds=_integer(options, "request_timeout_seconds", 20, 5, 60),
+        queue_retention_days=_integer(options, "queue_retention_days", 30, 1, 30),
+        max_queue_items=_integer(options, "max_queue_items", 100_000, 1_000, 500_000),
         allow_insecure_http=allow_insecure,
         log_level=log_level.upper(),
     )

@@ -1,7 +1,7 @@
 name: Waterlog Bridge
-version: "0.2.1"
+version: "0.3.0"
 slug: waterlog_bridge
-description: Send configured Home Assistant sensor readings to Waterlog safely.
+description: Send monitoring data and run explicitly enrolled tank modes safely.
 url: https://github.com/jasongibb/waterlog-home-assistant-apps/tree/main/waterlog-bridge
 image: ghcr.io/jasongibb/waterlog-home-assistant-bridge
 arch:
@@ -15,6 +15,8 @@ options:
   waterlog_url: https://waterlog.fish
   waterlog_credential: null
   streams: []
+  waterlog_control_credential: null
+  control_entities: []
   upload_interval_seconds: 1800
   batch_size: 250
   request_timeout_seconds: 20
@@ -29,6 +31,9 @@ schema:
     - stream_id: str
       entity_id: str
       unit_override: "str?"
+  waterlog_control_credential: password
+  control_entities:
+    - str
   upload_interval_seconds: "int(300,7200)"
   batch_size: "int(1,500)"
   request_timeout_seconds: "int(5,60)"

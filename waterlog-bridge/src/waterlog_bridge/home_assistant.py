@@ -48,7 +48,9 @@ class HomeAssistantClient:
                 timeout=self._timeout,
             )
         except TransportError as error:
-            raise HomeAssistantTransportError("Home Assistant API is unreachable") from error
+            raise HomeAssistantTransportError(
+                "Home Assistant API is unreachable"
+            ) from error
 
         if response.status in {401, 403}:
             raise HomeAssistantAuthenticationError(

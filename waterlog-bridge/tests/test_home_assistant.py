@@ -31,7 +31,9 @@ class HomeAssistantClientTests(unittest.TestCase):
         "sensor.reefato_temperature",
     )
 
-    def client(self, http_response: HttpResponse) -> tuple[HomeAssistantClient, FakeTransport]:
+    def client(
+        self, http_response: HttpResponse
+    ) -> tuple[HomeAssistantClient, FakeTransport]:
         transport = FakeTransport(http_response)
         return (
             HomeAssistantClient(

@@ -58,7 +58,9 @@ class ServiceTests(unittest.TestCase):
         self.queue.close()
         self.directory.cleanup()
 
-    def test_poll_separates_numeric_sample_probe_failure_and_bridge_health(self) -> None:
+    def test_poll_separates_numeric_sample_probe_failure_and_bridge_health(
+        self,
+    ) -> None:
         sample_count, unhealthy_count = self.service.poll_once(now=100)
         self.assertEqual((sample_count, unhealthy_count), (1, 1))
         items = self.queue.due_items(now=100, limit=20)
@@ -67,9 +69,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(samples), 1)
         self.assertEqual(samples[0]["streamId"], FIRST_STREAM)
         self.assertEqual(samples[0]["value"], 78.25)
-        self.assertEqual(
-            samples[0]["sourceUpdatedAt"], "2026-07-15T02:59:58.000Z"
-        )
+        self.assertEqual(samples[0]["sourceUpdatedAt"], "2026-07-15T02:59:58.000Z")
         self.assertNotEqual(samples[0]["value"], 0)
         self.assertTrue(
             any(
@@ -85,7 +85,9 @@ class ServiceTests(unittest.TestCase):
             )
         )
 
-    def test_repeated_probe_failure_is_an_edge_but_bridge_heartbeat_repeats(self) -> None:
+    def test_repeated_probe_failure_is_an_edge_but_bridge_heartbeat_repeats(
+        self,
+    ) -> None:
         self.service.poll_once(now=100)
         first_count = self.queue.stats().pending
         self.service.poll_once(now=400)
@@ -118,9 +120,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(dropped, 2)
         items = self.queue.due_items(now=2000, limit=1100)
         self.assertTrue(
-            any(
-                item.payload.get("code") == "queue_items_dropped" for item in items
-            )
+            any(item.payload.get("code") == "queue_items_dropped" for item in items)
         )
         self.assertEqual(self.queue.stats().pending, 1000)
 

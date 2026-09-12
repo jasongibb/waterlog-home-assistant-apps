@@ -1,8 +1,24 @@
 # Waterlog Bridge
 
-Waterlog Bridge reads the Home Assistant numeric entities you explicitly map and
-sends observations to Waterlog. It does not call Home Assistant services and
-cannot control heaters, pumps, outlets, ATOs, or other equipment.
+Waterlog monitoring and tank-mode control are independently optional. Tank
+modes require a dedicated show-once control credential plus an explicit list of
+individual `switch.*` entities. Do not reuse the telemetry credential. Leaving
+the control credential and entity list empty keeps service writes disabled.
+
+Complete enrollment in Waterlog under **Settings → Integrations → Equipment
+control**, then configure `waterlog_control_credential` and `control_entities`
+in this app. The Bridge discovers stable registry identities and Waterlog will
+not enable a tank profile until the installed configuration is acknowledged.
+
+Temporary-mode restoration is stored under `/data/control.sqlite3` and runs
+locally during Internet, Waterlog, or credential outages. Unknown/readback
+failures require attention; do not treat a Home Assistant `on` state as proof of
+physical flow. Before real use, perform the attended hardware validation listed
+in the repository README with an unused load first.
+
+Waterlog Bridge reads mapped numeric entities and sends observations to
+Waterlog. Only when the separate control options are configured can it call
+switch services for explicitly allowlisted tank-mode outlets.
 
 ## Before configuring the app
 

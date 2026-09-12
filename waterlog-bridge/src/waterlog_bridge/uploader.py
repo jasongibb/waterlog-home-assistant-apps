@@ -38,6 +38,8 @@ class WaterlogUploader:
         self._jitter = jitter
 
     def upload_once(self, *, now: float) -> UploadOutcome:
+        if self._config.credential is None:
+            return UploadOutcome()
         items = self._queue.due_items(now=now, limit=self._config.batch_size)
         if not items:
             return UploadOutcome()
@@ -57,7 +59,9 @@ class WaterlogUploader:
             )
         except TransportError:
             retry_at = self._retry(items, now=now, error_code="network_error")
-            LOGGER.warning("Telemetry upload failed before an HTTP response; retry scheduled")
+            LOGGER.warning(
+                "Telemetry upload failed before an HTTP response; retry scheduled"
+            )
             return UploadOutcome(
                 attempted=len(items), retryable=len(items), retry_at=retry_at
             )
@@ -85,9 +89,7 @@ class WaterlogUploader:
             )
 
         if response.status >= 500 or response.status in {408, 425}:
-            retry_at = self._retry(
-                items, now=now, error_code=f"http_{response.status}"
-            )
+            retry_at = self._retry(items, now=now, error_code=f"http_{response.status}")
             LOGGER.warning(
                 "Waterlog telemetry endpoint returned HTTP %s; retry scheduled",
                 response.status,
@@ -111,18 +113,20 @@ class WaterlogUploader:
                     len(items),
                 )
                 return UploadOutcome(
-                    attempted=len(items), quarantined=len(items), has_more_due=self._queue.has_due(now=now)
+                    attempted=len(items),
+                    quarantined=len(items),
+                    has_more_due=self._queue.has_due(now=now),
                 )
             retry_at = self._retry(items, now=now, error_code="invalid_acknowledgement")
-            LOGGER.error("Waterlog returned an invalid item acknowledgement; retry scheduled")
+            LOGGER.error(
+                "Waterlog returned an invalid item acknowledgement; retry scheduled"
+            )
             return UploadOutcome(
                 attempted=len(items), retryable=len(items), retry_at=retry_at
             )
 
         if not 200 <= response.status < 300 and not decisions:
-            retry_at = self._retry(
-                items, now=now, error_code=f"http_{response.status}"
-            )
+            retry_at = self._retry(items, now=now, error_code=f"http_{response.status}")
             LOGGER.error(
                 "Waterlog telemetry endpoint returned HTTP %s without item results; retry scheduled",
                 response.status,
@@ -160,7 +164,9 @@ class WaterlogUploader:
             )
         has_more = self._queue.has_due(now=now)
         if accepted:
-            LOGGER.info("Waterlog acknowledged %s queued telemetry items", len(accepted))
+            LOGGER.info(
+                "Waterlog acknowledged %s queued telemetry items", len(accepted)
+            )
         return UploadOutcome(
             attempted=len(items),
             acknowledged=len(accepted),
@@ -229,9 +235,7 @@ def parse_acknowledgements(
                 raise AcknowledgementProtocolError("result must be an object")
             raw_kind = result.get("kind") or result.get("itemType")
             kind = (
-                {"samples": "sample", "statuses": "status"}.get(
-                    raw_kind, raw_kind
-                )
+                {"samples": "sample", "statuses": "status"}.get(raw_kind, raw_kind)
                 if isinstance(raw_kind, str)
                 else None
             )

@@ -80,7 +80,9 @@ class UploaderTests(unittest.TestCase):
         )
         self.assertNotIn("sourceId", json.dumps(call["payload"]))
 
-    def test_permanent_item_failure_is_quarantined_while_other_item_succeeds(self) -> None:
+    def test_permanent_item_failure_is_quarantined_while_other_item_succeeds(
+        self,
+    ) -> None:
         self.enqueue_pair()
         transport = FakeTransport(
             http_response(

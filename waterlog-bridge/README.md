@@ -5,24 +5,46 @@ add-on). It is Waterlog's vendor-neutral acquisition adapter: any Home Assistant
 integration that exposes a numeric sensor entity can use the same stream
 mapping.
 
-The bridge deliberately has no Home Assistant service-write code. Its only Home
-Assistant permission is `homeassistant_api: true`, used to `GET` configured
-entity states through `http://supervisor/core/api` with the injected
-`SUPERVISOR_TOKEN`. The Waterlog credential is used only in an Authorization
-header to `POST /api/ingest/telemetry`.
+Telemetry remains read-only. Equipment control is a separate opt-in runtime:
+it accepts only individually configured `switch.*` entities, resolves their
+stable Home Assistant registry identity, and uses explicit `switch.turn_off`
+and `switch.turn_on` calls with readback. It has a separate show-once Waterlog
+control credential; a telemetry credential cannot control equipment.
 
 ## Package layout
 
 - `config.yaml` — Supervisor app metadata, options, and schema.
 - `Dockerfile` / `run.sh` — multi-architecture container entry point.
-- `src/waterlog_bridge` — configuration, read-only HA client, SQLite outbox,
-  uploader, and scheduler.
+- `src/waterlog_bridge` — telemetry acquisition and outbox plus a separately
+  persisted tank-mode executor and restoration scheduler.
 - `DOCS.md` — installation-time user documentation.
 - `tests` — deterministic standard-library unit tests.
 
-The runtime has no third-party Python dependencies. The container supports the
+The runtime pins `websocket-client` for Home Assistant registry discovery. The container supports the
 Home Assistant OS Raspberry Pi architecture (`aarch64`) and development/host
 architecture (`amd64`). Persistent state lives only under `/data`.
+
+## Opt-in tank modes
+
+Leave `waterlog_control_credential` and `control_entities` empty to keep all
+control disabled. To enroll, register a control Bridge in Waterlog, copy its
+show-once credential, and list each intended `switch.entity_id` explicitly in
+the app configuration. The control loop uses `/data/control.sqlite3`, separate
+from telemetry retention, with WAL and full synchronous writes. It records the
+complete baseline/deadline plan before the first Home Assistant service call
+and restores locally even if Waterlog or its credential is unavailable.
+If the control database is lost while the installation identity survives, the
+authenticated exchange resumes above Waterlog's Bridge-wide report sequence
+and persists each affected Aquarium separately. Attended acknowledgement only
+records the observed state; it never switches an outlet, and one Aquarium
+cannot clear another Aquarium's unresolved recovery.
+
+Before household activation, validate the actual P316M hardware/firmware and
+Home Assistant integration behavior with an attended unused load, then each
+mapped aquarium device. Confirm all six physical outlets, the BioMaster mapping,
+native timers and power-cycle recovery, competing automations, and that HA's
+reported switch state does not prove physical water flow. This implementation
+and its synthetic tests do not activate or operate household outlets.
 
 ## Local tests
 

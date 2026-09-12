@@ -84,7 +84,9 @@ class DurableQueueTests(unittest.TestCase):
         self.assertIsNotNone(recovery)
         self.assertEqual(self.queue.stats().pending, 2)
 
-    def test_restart_reset_reemits_current_health_after_configuration_repair(self) -> None:
+    def test_restart_reset_reemits_current_health_after_configuration_repair(
+        self,
+    ) -> None:
         first = self.queue.enqueue_stream_status_if_changed(
             stream_id=STREAM_ID,
             occurred_at="2026-07-15T03:00:00.000Z",

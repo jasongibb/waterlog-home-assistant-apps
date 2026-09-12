@@ -8,7 +8,7 @@ LABEL \
     io.hass.type="app" \
     io.hass.arch="${BUILD_ARCH}" \
     org.opencontainers.image.title="Waterlog Bridge" \
-    org.opencontainers.image.description="Read-only Home Assistant telemetry bridge for Waterlog" \
+    org.opencontainers.image.description="Home Assistant telemetry and opt-in tank-mode bridge for Waterlog" \
     org.opencontainers.image.source="https://github.com/jasongibb/waterlog-home-assistant-apps" \
     org.opencontainers.image.licenses="UNLICENSED"
 
@@ -19,6 +19,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY src/ /app/
 COPY run.sh /run.sh
-RUN chmod 0755 /run.sh
+RUN pip install --no-cache-dir websocket-client==1.8.0 && chmod 0755 /run.sh
 
 ENTRYPOINT ["/run.sh"]

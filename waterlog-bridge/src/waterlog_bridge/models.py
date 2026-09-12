@@ -20,8 +20,10 @@ class BridgeConfig:
     """Validated app configuration loaded from Home Assistant options."""
 
     waterlog_url: str
-    credential: str = field(repr=False)
-    streams: tuple[StreamConfig, ...]
+    credential: str | None = field(default=None, repr=False)
+    streams: tuple[StreamConfig, ...] = ()
+    control_credential: str | None = field(default=None, repr=False)
+    control_entities: tuple[str, ...] = ()
     sample_interval_seconds: int = 300
     upload_interval_seconds: int = 1800
     batch_size: int = 250
@@ -34,6 +36,14 @@ class BridgeConfig:
     @property
     def ingest_url(self) -> str:
         return f"{self.waterlog_url.rstrip('/')}/api/ingest/telemetry"
+
+    @property
+    def telemetry_enabled(self) -> bool:
+        return self.credential is not None and bool(self.streams)
+
+    @property
+    def control_enabled(self) -> bool:
+        return self.control_credential is not None and bool(self.control_entities)
 
 
 @dataclass(frozen=True, slots=True)

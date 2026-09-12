@@ -1,9 +1,9 @@
 [project]
 name = "waterlog-home-assistant-bridge"
-version = "0.1.0"
+version = "0.3.0"
 description = "Home Assistant OS telemetry bridge for Waterlog"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = ["websocket-client==1.8.0"]
 
 [tool.coverage.run]
 branch = true

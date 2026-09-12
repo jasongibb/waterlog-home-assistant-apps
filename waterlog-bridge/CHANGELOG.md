@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Add opt-in Feed/Normal/Water Change execution for explicitly allowlisted
+  Home Assistant switches with a separate Waterlog control credential.
+- Persist local baselines, deadlines, recovery obligations, configuration, and
+  report outbox independently of telemetry so restoration survives outages and
+  restarts.
+- Add stable registry identity checks, dependency ordering, service-call
+  readback, truthful failure/recovery states, and control-only operation.
+
 ## 0.2.1
 
 - Withdraws the unvalidated direct HYDROS API preview introduced in 0.2.0.

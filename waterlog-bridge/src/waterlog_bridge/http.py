@@ -38,9 +38,7 @@ class HttpTransport:
             urllib.request.ProxyHandler({}), _NoRedirect()
         )
 
-    def get(
-        self, url: str, *, headers: dict[str, str], timeout: int
-    ) -> HttpResponse:
+    def get(self, url: str, *, headers: dict[str, str], timeout: int) -> HttpResponse:
         request = urllib.request.Request(url, headers=headers, method="GET")
         return self._open(request, timeout)
 
@@ -69,13 +67,17 @@ class HttpTransport:
                     raise ResponseTooLargeError("HTTP response exceeded the size limit")
                 return HttpResponse(
                     status=int(response.status),
-                    headers={key.lower(): value for key, value in response.headers.items()},
+                    headers={
+                        key.lower(): value for key, value in response.headers.items()
+                    },
                     body=body,
                 )
         except urllib.error.HTTPError as error:
             body = error.read(MAX_RESPONSE_BYTES + 1)
             if len(body) > MAX_RESPONSE_BYTES:
-                raise ResponseTooLargeError("HTTP error response exceeded the size limit")
+                raise ResponseTooLargeError(
+                    "HTTP error response exceeded the size limit"
+                )
             return HttpResponse(
                 status=int(error.code),
                 headers={key.lower(): value for key, value in error.headers.items()},

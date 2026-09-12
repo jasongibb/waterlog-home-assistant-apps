@@ -61,10 +61,31 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "entity_id values must be unique"):
             self.load(options)
 
-    def test_empty_stream_list_is_rejected(self) -> None:
+    def test_empty_stream_list_requires_explicit_control_configuration(self) -> None:
         options = valid_options()
         options["streams"] = []
-        with self.assertRaisesRegex(ConfigError, "at least one stream"):
+        options["waterlog_credential"] = None
+        with self.assertRaisesRegex(ConfigError, "telemetry streams or"):
+            self.load(options)
+
+    def test_control_only_configuration_is_valid_and_separate(self) -> None:
+        options = valid_options()
+        options.update(
+            {
+                "waterlog_credential": None,
+                "streams": [],
+                "waterlog_control_credential": "wl_ctl_separate-test-credential",
+                "control_entities": ["switch.p316m_outlet_1"],
+            }
+        )
+        config = self.load(options)
+        self.assertFalse(config.telemetry_enabled)
+        self.assertTrue(config.control_enabled)
+
+    def test_telemetry_credential_cannot_enable_control(self) -> None:
+        options = valid_options()
+        options["control_entities"] = ["switch.p316m_outlet_1"]
+        with self.assertRaisesRegex(ConfigError, "control_entities and"):
             self.load(options)
 
     def test_removed_hydros_options_do_not_change_home_assistant_config(self) -> None:

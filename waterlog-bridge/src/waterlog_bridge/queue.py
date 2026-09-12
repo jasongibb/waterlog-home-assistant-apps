@@ -300,7 +300,9 @@ class DurableQueue:
             FROM outbox
             """
         ).fetchone()
-        return QueueStats(pending=row["pending"] or 0, quarantined=row["quarantined"] or 0)
+        return QueueStats(
+            pending=row["pending"] or 0, quarantined=row["quarantined"] or 0
+        )
 
     def reset_health_edges(self) -> None:
         """Force a fresh health edge after app restart or configuration repair."""

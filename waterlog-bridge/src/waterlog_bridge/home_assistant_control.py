@@ -22,7 +22,7 @@ class HomeAssistantControl:
         timeout_seconds: int = 5,
         transport: HttpTransport | None = None,
         core_api_url: str = "http://supervisor/core/api",
-        confirmation_timeout_seconds: float = 5.0,
+        confirmation_timeout_seconds: float = 15.0,
         confirmation_interval_seconds: float = 0.2,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -83,6 +83,9 @@ class HomeAssistantControl:
             ) from error
         if response.status not in {200, 201}:
             raise HomeAssistantControlError("Home Assistant rejected switch control")
+        # HA can accept a switch call before its integration publishes the new
+        # state. P316M readback has arrived just after five seconds in practice;
+        # allow that delayed confirmation without resending the service call.
         deadline = self._monotonic() + self._confirmation_timeout
         while True:
             try:
@@ -93,6 +96,7 @@ class HomeAssistantControl:
                 return observed
             if self._monotonic() >= deadline:
                 raise HomeAssistantControlError(
-                    "Home Assistant switch confirmation timed out"
+                    "Home Assistant switch confirmation timed out: "
+                    f"{entity_id} expected {state}, last observed {observed}"
                 )
             self._sleep(self._confirmation_interval)

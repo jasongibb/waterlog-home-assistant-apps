@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.3
+
+- Allow 15 seconds for Home Assistant to confirm an outlet change after an
+  accepted switch call. This avoids aborting Feed when a P316M reports its new
+  state just after the previous five-second limit.
+- Keep the original restoration deadlines and fail safely if confirmation
+  still does not arrive. Timeout logs identify the switch, requested state,
+  and last reported state.
+
 ## 0.3.2
 
 - Wait for Home Assistant to confirm outlet changes during tank-mode commands.

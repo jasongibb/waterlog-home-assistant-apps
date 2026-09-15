@@ -900,6 +900,140 @@ class ControlExecutorTests(unittest.TestCase):
         self.assertEqual(reports[-1]["errorCode"], "entry_failed")
         self.assertTrue(any("Tank mode entry failed" in line for line in logs.output))
 
+    def test_entry_reconciles_another_tanks_deadline_after_confirmation(self):
+        ha = FakeHA({"switch.pump": "on", "switch.heater": "on"})
+        service = self.service(ha)
+        service.accept(
+            replace(command(outlets=[planned_outlet(PUMP)], now=self.now), tank_id=SECOND_TANK),
+            self.now,
+        )
+        self.now += 55
+
+        def delayed_heater(entity_id, state):
+            if entity_id == "switch.heater" and state == "off":
+                self.now += 6
+
+        ha.before_write = delayed_heater
+        service.accept(
+            command(revision=2, outlets=[planned_outlet(HEATER, seconds=120)], now=self.now),
+            self.now,
+        )
+
+        self.assertEqual(ha.writes, [
+            ("switch.pump", "off"),
+            ("switch.heater", "off"),
+            ("switch.pump", "on"),
+        ])
+        self.assertEqual(len(self.store.sessions()), 1)
+        self.assertEqual(self.store.sessions()[0]["tank_id"], TANK)
+        self.assertEqual(self.store.sessions()[0]["phase"], "active")
+
+    def test_delayed_state_confirmation_keeps_feed_active_without_compensation(self):
+        class DelayedStateTransport:
+            def __init__(self, now):
+                self.now = now
+                self.states = {"switch.pump": "on", "switch.heater": "on"}
+                self.off_visible_at = {}
+                self.posts = []
+
+            def get(self, url, *, headers, timeout):  # noqa: ANN001
+                entity_id = url.rsplit("/", 1)[-1]
+                state = self.states[entity_id]
+                if state == "off" and self.now < self.off_visible_at.get(entity_id, 0):
+                    state = "on"
+                return HttpResponse(200, {}, json.dumps({"state": state}).encode())
+
+            def post_json(self, url, *, headers, payload, timeout):  # noqa: ANN001
+                entity_id = payload["entity_id"]
+                state = "off" if url.endswith("/turn_off") else "on"
+                self.posts.append((entity_id, state))
+                self.states[entity_id] = state
+                if state == "off":
+                    self.off_visible_at[entity_id] = self.now + 6
+                return HttpResponse(200, {}, b"[]")
+
+        transport = DelayedStateTransport(self.now)
+
+        def advance(seconds):
+            self.now += seconds
+            transport.now = self.now
+
+        ha = HomeAssistantControl(
+            "supervisor-secret",
+            transport=transport,
+            monotonic=lambda: self.now,
+            sleep=advance,
+        )
+        service = self.service(ha)
+        service.accept(command(now=self.now), self.now)
+
+        self.assertEqual(
+            transport.posts,
+            [("switch.heater", "off"), ("switch.pump", "off")],
+        )
+        self.assertEqual(self.store.sessions()[0]["phase"], "active")
+        deadlines = {item["outlet_id"]: item["deadline"] for item in self.store.obligations(TANK)}
+        self.assertAlmostEqual(deadlines[PUMP], 1_800_000_060.0)
+        self.assertAlmostEqual(deadlines[HEATER], 1_800_000_120.0)
+
+        advance(1_800_000_061.0 - self.now)
+        service.tick()
+        self.assertEqual(transport.posts[-1], ("switch.pump", "on"))
+        self.assertNotIn(("switch.heater", "on"), transport.posts)
+        advance(1_800_000_121.0 - self.now)
+        service.tick()
+        self.assertEqual(transport.posts[-1], ("switch.heater", "on"))
+        self.assertEqual(self.store.sessions(), [])
+
+    def test_entry_does_not_start_later_outlet_after_deadline_crosses(self):
+        class SlowFirstOff(FakeHA):
+            def __init__(self, states, clock_now):
+                super().__init__(states)
+                self.clock_now = clock_now
+                self.before_write = self.slow
+
+            def slow(self, entity_id, state):
+                if entity_id == "switch.heater" and state == "off":
+                    self.clock_now[0] += 61
+
+        clock_now = [self.now]
+        ha = SlowFirstOff({"switch.pump": "on", "switch.heater": "on"}, clock_now)
+        service = ControlService(
+            self.store, NoCloud(), ha, INSTALLATION, inventory(),
+            clock=lambda: clock_now[0], monotonic=lambda: clock_now[0],
+        )
+        service.accept(command(now=self.now), self.now)
+
+        self.assertIn(("switch.heater", "off"), ha.writes)
+        self.assertIn(("switch.heater", "on"), ha.writes)
+        self.assertNotIn(("switch.pump", "off"), ha.writes)
+        self.assertEqual(ha.states, {"switch.pump": "on", "switch.heater": "on"})
+        self.assertEqual(self.store.sessions(), [])
+        self.assertEqual(self.store.reports()[-1]["requestStatus"], "failed")
+
+    def test_entry_restores_immediately_when_final_confirmation_misses_deadline(self):
+        class SlowFinalOff(FakeHA):
+            def __init__(self, states, clock_now):
+                super().__init__(states)
+                self.clock_now = clock_now
+                self.before_write = self.slow
+
+            def slow(self, entity_id, state):
+                if entity_id == "switch.heater" and state == "off":
+                    self.clock_now[0] += 121
+
+        clock_now = [self.now]
+        ha = SlowFinalOff({"switch.pump": "on", "switch.heater": "on"}, clock_now)
+        service = ControlService(
+            self.store, NoCloud(), ha, INSTALLATION, inventory(),
+            clock=lambda: clock_now[0], monotonic=lambda: clock_now[0],
+        )
+        service.accept(command(now=self.now), self.now)
+
+        self.assertEqual(ha.states, {"switch.pump": "on", "switch.heater": "on"})
+        self.assertEqual(self.store.sessions(), [])
+        self.assertEqual(self.store.reports()[-1]["requestStatus"], "failed")
+
     def test_failed_compensation_remains_pending_until_confirmed_retry(self):
         class AppliedOffThenFailedFirstCompensation:
             def __init__(self):

@@ -292,6 +292,24 @@ class ControlService:
             else:
                 self._temporary(command, now)
 
+    def _check_entry_deadlines(self, tank_id: str) -> None:
+        # Entry owns the state lock while waiting for HA. Give other tanks'
+        # due restorations a turn between writes instead of blocking for the
+        # entire batch of confirmations.
+        for session in self.store.sessions():
+            other_tank = str(session["tank_id"])
+            if other_tank != tank_id and any(
+                self.clock() >= float(item["deadline"])
+                for item in self.store.obligations(other_tank)
+            ):
+                self._restore(other_tank, now=self.clock())
+        if any(
+            self.clock() >= float(item["deadline"])
+            for item in self.store.obligations(tank_id)
+            if bool(item["active_in_next"])
+        ):
+            raise HomeAssistantControlError("tank mode deadline expired during entry")
+
     def _temporary(self, command: ControlCommand, now: float) -> None:
         try:
             resolved = self._resolve_plan(command.outlets)
@@ -402,6 +420,9 @@ class ControlService:
                 key=lambda item: (-depths[item.outlet_id], item.outlet_id),
             ):
                 local = resolved[outlet.outlet_id][1]
+                # Confirmation can take long enough for a short mode window to
+                # expire. Restore before issuing another entry write.
+                self._check_entry_deadlines(command.tank_id)
                 if states[outlet.outlet_id] == "off":
                     self.store.mark_result(command.tank_id, outlet.outlet_id, "preserved")
                     continue
@@ -409,6 +430,9 @@ class ControlService:
                 if self.ha.set_state(local.entity_id, "off") != "off":
                     raise HomeAssistantControlError("off readback failed")
                 self.store.mark_result(command.tank_id, outlet.outlet_id, "off")
+            # A final confirmation may consume the entire remaining window;
+            # unwind instead of publishing an already-expired active session.
+            self._check_entry_deadlines(command.tank_id)
             self.store.set_command_status(command.command_id, "completed")
             self.store.set_session(command.tank_id, "active", mode=command.mode, now=now)
             self._report(command.tank_id, request_status="completed")

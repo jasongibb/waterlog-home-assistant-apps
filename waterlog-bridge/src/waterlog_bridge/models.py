@@ -24,6 +24,7 @@ class BridgeConfig:
     streams: tuple[StreamConfig, ...] = ()
     control_credential: str | None = field(default=None, repr=False)
     control_entities: tuple[str, ...] = ()
+    control_strips: tuple[str, ...] = ()
     sample_interval_seconds: int = 300
     upload_interval_seconds: int = 1800
     batch_size: int = 250
@@ -43,7 +44,9 @@ class BridgeConfig:
 
     @property
     def control_enabled(self) -> bool:
-        return self.control_credential is not None and bool(self.control_entities)
+        return self.control_credential is not None and bool(
+            self.control_entities or self.control_strips
+        )
 
 
 @dataclass(frozen=True, slots=True)

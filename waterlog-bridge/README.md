@@ -6,7 +6,8 @@ integration that exposes a numeric sensor entity can use the same stream
 mapping.
 
 Telemetry remains read-only. Equipment control is a separate opt-in runtime:
-it accepts only individually configured `switch.*` entities, resolves their
+it accepts only the outlets of configured power strips (`control_strips`) and
+individually configured `switch.*` entities (`control_entities`), resolves their
 stable Home Assistant registry identity, and uses explicit `switch.turn_off`
 and `switch.turn_on` calls with readback. It has a separate show-once Waterlog
 control credential; a telemetry credential cannot control equipment.
@@ -26,10 +27,13 @@ architecture (`amd64`). Persistent state lives only under `/data`.
 
 ## Opt-in tank modes
 
-Leave `waterlog_control_credential` and `control_entities` empty to keep all
-control disabled. To enroll, register a control Bridge in Waterlog, copy its
-show-once credential, and list each intended `switch.entity_id` explicitly in
-the app configuration. The control loop uses `/data/control.sqlite3`, separate
+Leave `waterlog_control_credential`, `control_strips` and `control_entities`
+empty to keep all control disabled. To enroll, register a control Bridge in
+Waterlog, copy its show-once credential, and list each power strip (its Home
+Assistant device name or device ID, at most 16) or each intended
+`switch.entity_id` explicitly in the app configuration. A strip contributes its
+enabled outlet switches and those of its child devices, leaving out
+configuration entities; entities listed both ways merge by registry entry. The control loop uses `/data/control.sqlite3`, separate
 from telemetry retention, with WAL and full synchronous writes. It records the
 complete baseline/deadline plan before the first Home Assistant service call
 and restores locally even if Waterlog or its credential is unavailable.
@@ -38,6 +42,33 @@ authenticated exchange resumes above Waterlog's Bridge-wide report sequence
 and persists each affected Aquarium separately. Attended acknowledgement only
 records the observed state; it never switches an outlet, and one Aquarium
 cannot clear another Aquarium's unresolved recovery.
+
+## Outlet schedules
+
+Waterlog sends each outlet's schedule (selected weekdays, an on time and an off
+time; an off time earlier than the on time runs overnight) with protocol
+version 2. The Bridge commits the whole set and its revision to
+`/data/control.sqlite3` before acknowledging that revision, and its scheduler
+thread applies each scheduled change locally in Home Assistant's time zone
+(read from `core/api/config`, with DST handled by `zoneinfo` and the bundled
+`tzdata`). It records the last applied change per outlet, so:
+
+- a manual switch stays until the next scheduled change, including across
+  restarts;
+- after downtime only the latest missed change is applied;
+- a new or edited schedule applies its current state once, and unchanged
+  schedules keep their progress when another outlet's schedule changes;
+- a failed change is retried after 30 seconds, backing off to every 5 minutes,
+  and is not recorded as applied until Home Assistant confirms it;
+- a clock that moves back is clamped and the latest change applied once.
+
+Schedules skip any outlet a Tank Mode session owns and wait while a mode is
+starting or switching or a restoration is due within 20 seconds; at most one
+outlet switches per scheduler pass. When a mode ends, a scheduled outlet is
+restored to its schedule's current state; outlets without a schedule restore
+their captured baseline exactly as before. A background refresher reads outlet
+states about every 10 seconds and registry names and the time zone about every
+5 minutes, keeping the last good values when Home Assistant is unavailable.
 
 Before household activation, validate the actual P316M hardware/firmware and
 Home Assistant integration behavior with an attended unused load, then each

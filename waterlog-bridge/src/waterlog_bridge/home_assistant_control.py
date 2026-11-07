@@ -61,6 +61,32 @@ class HomeAssistantControl:
         state = value.get("state") if isinstance(value, dict) else None
         return state if state in {"on", "off"} else "unavailable"
 
+    def time_zone(self) -> str | None:
+        """Home Assistant's configured IANA time zone, or None when unusable."""
+        try:
+            response = self._transport.get(
+                f"{self._base}/config",
+                headers={
+                    "Authorization": f"Bearer {self._token}",
+                    "Accept": "application/json",
+                },
+                timeout=self._timeout,
+            )
+        except TransportError as error:
+            raise HomeAssistantControlError("Home Assistant is unreachable") from error
+        if response.status in {401, 403}:
+            raise HomeAssistantControlError("Home Assistant rejected its local token")
+        if response.status != 200:
+            raise HomeAssistantControlError("Home Assistant configuration is unavailable")
+        try:
+            value = json.loads(response.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise HomeAssistantControlError(
+                "Home Assistant configuration is invalid"
+            ) from error
+        name = value.get("time_zone") if isinstance(value, dict) else None
+        return name if isinstance(name, str) and 1 <= len(name) <= 64 else None
+
     def set_state(self, entity_id: str, state: str) -> str:
         if state not in {"on", "off"} or not entity_id.startswith("switch."):
             raise ValueError("only explicit individual switch on/off is allowed")

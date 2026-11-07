@@ -1,14 +1,46 @@
 # Waterlog Bridge
 
-Waterlog monitoring and tank-mode control are independently optional. Tank
-modes require a dedicated show-once control credential plus an explicit list of
-individual `switch.*` entities. Do not reuse the telemetry credential. Leaving
-the control credential and entity list empty keeps service writes disabled.
+Waterlog monitoring and equipment control are independently optional. Control
+requires a dedicated show-once control credential plus an explicit list of
+power strips (`control_strips`), individual `switch.*` entities
+(`control_entities`), or both. Do not reuse the telemetry credential. Leaving
+the control credential and both lists empty keeps service writes disabled.
 
 Complete enrollment in Waterlog under **Settings → Integrations → Equipment
-control**, then configure `waterlog_control_credential` and `control_entities`
-in this app. The Bridge discovers stable registry identities and Waterlog will
-not enable a tank profile until the installed configuration is acknowledged.
+control**, then configure `waterlog_control_credential` and `control_strips`
+or `control_entities` in this app. List each strip by its Home Assistant device
+name or device ID. Every enabled outlet switch on a listed strip (configuration
+switches such as LEDs and auto-off timers are left out) appears in Waterlog with
+its Home Assistant name, its strip name and its current state. The Bridge
+discovers stable registry identities and Waterlog will not enable a tank
+profile until the installed configuration is acknowledged.
+
+```yaml
+waterlog_control_credential: paste-the-show-once-control-credential
+control_strips:
+  - Pea Puffer Power Strip
+control_entities: []
+```
+
+## Outlet schedules
+
+Set an outlet's schedule in Waterlog under **Settings → Outlets**. The Bridge
+stores installed schedules locally and switches the outlet at each scheduled
+change, using Home Assistant's time zone, even while Waterlog or the Internet
+is unreachable.
+
+- A manual switch in Home Assistant or the Tapo app stays until the next
+  scheduled change. Restarting the Bridge does not undo it.
+- After the Bridge was down, it applies only the latest missed change.
+- A change that Home Assistant does not confirm is retried after 30 seconds,
+  backing off to every 5 minutes, until it succeeds or the next scheduled
+  change replaces it.
+- Schedules never switch an outlet that a Tank Mode is using. When the mode
+  ends, a scheduled outlet goes to its schedule's current state instead of its
+  state before the mode. Outlets without a schedule return to their state
+  before the mode, as before.
+- Schedules pause while Home Assistant's time zone is unknown or the system
+  clock is not trusted.
 
 Temporary-mode restoration is stored under `/data/control.sqlite3` and runs
 locally during Internet, Waterlog, or credential outages. Unknown/readback
@@ -18,7 +50,8 @@ in the repository README with an unused load first.
 
 Waterlog Bridge reads mapped numeric entities and sends observations to
 Waterlog. Only when the separate control options are configured can it call
-switch services for explicitly allowlisted tank-mode outlets.
+switch services, and only for outlets on the listed strips or entities, for
+tank modes and outlet schedules.
 
 ## Before configuring the app
 

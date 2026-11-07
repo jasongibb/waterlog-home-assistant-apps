@@ -1,7 +1,7 @@
 name: Waterlog Bridge
-version: "0.3.3"
+version: "0.4.0"
 slug: waterlog_bridge
-description: Send monitoring data and run explicitly enrolled tank modes safely.
+description: Send monitoring data and run enrolled tank modes and outlet schedules safely.
 url: https://github.com/jasongibb/waterlog-home-assistant-apps/tree/main/waterlog-bridge
 image: ghcr.io/jasongibb/waterlog-home-assistant-bridge
 arch:
@@ -15,6 +15,7 @@ options:
   waterlog_url: https://waterlog.fish
   streams: []
   control_entities: []
+  control_strips: []
   upload_interval_seconds: 1800
   batch_size: 250
   request_timeout_seconds: 20
@@ -31,6 +32,8 @@ schema:
       unit_override: "str?"
   waterlog_control_credential: "password?"
   control_entities:
+    - str
+  control_strips:
     - str
   upload_interval_seconds: "int(300,7200)"
   batch_size: "int(1,500)"

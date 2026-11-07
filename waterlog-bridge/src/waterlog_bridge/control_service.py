@@ -1,4 +1,4 @@
-"""Durable local tank-mode executor and independent restoration scheduler."""
+"""Durable local tank-mode executor, outlet schedules and restoration scheduler."""
 
 from __future__ import annotations
 
@@ -13,9 +13,25 @@ from .control_models import ControlCommand, ControlOutlet, RegistryOutlet
 from .control_store import ControlStore
 from .home_assistant_control import HomeAssistantControl, HomeAssistantControlError
 from .http import TransportError
+from .schedules import Edge, OutletSchedule, latest_edge, parse_schedule_list, zone
 
 LOGGER = logging.getLogger(__name__)
 _RETRY = (1, 2, 5, 10, 30)
+PROTOCOL_VERSION = 2
+# A failed scheduled change is retried until it succeeds or a newer scheduled
+# change supersedes it. The wait starts after the attempt finishes and doubles
+# with each consecutive failure, so an unresponsive outlet cannot keep the
+# control lock busy.
+SCHEDULE_RETRY_SECONDS = 30.0
+SCHEDULE_RETRY_MAX_SECONDS = 300.0
+# Schedule writes wait for readback under the control lock: a state read, the
+# switch call and up to 15 s of confirmation, about 50 s at worst with default
+# timeouts. Do not start one while a Tank Mode restoration is due that soon.
+SCHEDULE_DEADLINE_GUARD_SECONDS = 60.0
+# A stored applied edge this far in the future means the clock moved back.
+SCHEDULE_CLOCK_SLACK_SECONDS = 60.0
+# Inventory states older than this are reported as unknown.
+STATE_MAX_AGE_SECONDS = 60.0
 
 
 def _timestamp(epoch: float) -> str:
@@ -36,6 +52,13 @@ class ControlService:
         monotonic: Callable[[], float] = time.monotonic,
         stop_event: threading.Event | None = None,
         scheduler_interval: float = 0.2,
+        inventory_discoverer: Callable[
+            [tuple[RegistryOutlet, ...]], tuple[RegistryOutlet, ...]
+        ]
+        | None = None,
+        time_zone_provider: Callable[[], str | None] | None = None,
+        state_refresh_interval: float = 10.0,
+        registry_refresh_interval: float = 300.0,
     ) -> None:
         self.store = store
         self.client = client
@@ -53,6 +76,19 @@ class ControlService:
         persisted = [float(row["last_utc"]) for row in self.store.sessions()]
         self._persisted_utc = max(persisted) if persisted else None
         self._startup_clock_checked = False
+        self._clock_trusted = True
+        # Background refresh: a network-only registry discovery given pins,
+        # Home Assistant's time zone, and cached outlet states. None of it runs
+        # under the control lock except the brief swap of its results.
+        self.inventory_discoverer = inventory_discoverer
+        self.time_zone_provider = time_zone_provider
+        self.state_refresh_interval = state_refresh_interval
+        self.registry_refresh_interval = registry_refresh_interval
+        self._cache_lock = threading.Lock()
+        self._states: dict[str, tuple[str, float]] = {}
+        self._time_zone = self.store.time_zone()
+        # Consecutive scheduled-change failures per outlet: (edge_at, count).
+        self._schedule_failures: dict[str, tuple[float, int]] = {}
 
     def _fresh_inventory(self) -> dict[str, RegistryOutlet]:
         if self.inventory_provider is not None:
@@ -132,6 +168,7 @@ class ControlService:
         self._startup_clock_checked = True
         self._last_utc = now
         self._last_mono = mono
+        self._clock_trusted = safe
         if not safe:
             for session in self.store.sessions():
                 self.store.set_session(session["tank_id"], "restoring", mode="normal", error="clock_uncertain", now=now)
@@ -479,6 +516,175 @@ class ControlService:
         count = min(int(item["retry_count"]) + 1, len(_RETRY))
         self.store.retry_obligation(str(item["tank_id"]), str(item["outlet_id"]), error=error, retry_count=count, retry_at=now + _RETRY[count - 1])
 
+    @staticmethod
+    def _schedule_from_row(row) -> OutletSchedule:
+        return OutletSchedule(int(row["weekdays"]), str(row["on_at"]), str(row["off_at"]))
+
+    def _restore_target(
+        self, outlet_id: str, baseline: str, now: float
+    ) -> tuple[str, Edge | None]:
+        """Restore a scheduled outlet to its schedule; others to the baseline."""
+        row = self.store.schedule(outlet_id)
+        tz = zone(self._time_zone)
+        if row is None or tz is None or not self._clock_trusted:
+            return baseline, None
+        try:
+            edge = latest_edge(self._schedule_from_row(row), tz, now)
+        except ValueError:
+            return baseline, None
+        return edge.state, edge
+
+    def _schedule_restored(self, outlet_id: str, edge: Edge | None) -> None:
+        # The restore already applied the latest scheduled change.
+        if edge is not None:
+            self.store.mark_schedule_applied(outlet_id, edge.at)
+
+    def _cache_state(self, outlet_id: str, state: str) -> None:
+        with self._cache_lock:
+            self._states[outlet_id] = (state, self.monotonic())
+
+    def _schedule_blockers(self, now: float) -> set[str] | None:
+        """Outlets a Tank Mode owns, or None while schedule work must wait."""
+        owned: set[str] = set()
+        for session in self.store.sessions():
+            if session["phase"] in {"starting", "switching"}:
+                return None
+            for item in self.store.obligations(str(session["tank_id"])):
+                owned.add(str(item["outlet_id"]))
+                if (
+                    item["result"] != "restored"
+                    and now < float(item["deadline"]) <= now + SCHEDULE_DEADLINE_GUARD_SECONDS
+                ):
+                    return None
+        return owned
+
+    def _run_schedules(self, now: float, clock_safe: bool) -> None:
+        """Apply at most one due scheduled change. Caller holds the lock."""
+        tz = zone(self._time_zone)
+        if not clock_safe or tz is None:
+            return
+        rows = self.store.schedules()
+        if not rows:
+            return
+        owned = self._schedule_blockers(now)
+        if owned is None:
+            return
+        inventory = {item.outlet_id: item for item in self.inventory}
+        for row in rows:
+            outlet_id = str(row["outlet_id"])
+            local = inventory.get(outlet_id)
+            if outlet_id in owned or local is None:
+                continue
+            try:
+                edge = latest_edge(self._schedule_from_row(row), tz, now)
+            except ValueError:
+                continue
+            last = None if row["last_edge_at"] is None else float(row["last_edge_at"])
+            if last is not None and last > now + SCHEDULE_CLOCK_SLACK_SECONDS:
+                LOGGER.warning(
+                    "Clock moved back; applying the latest scheduled change for %s once",
+                    local.entity_id,
+                )
+                last = None
+            if last is not None and edge.at <= last:
+                continue
+            if (
+                row["retry_at"] is not None
+                and row["retry_edge_at"] is not None
+                and float(row["retry_edge_at"]) == edge.at
+                and now < float(row["retry_at"])
+            ):
+                continue
+            if self._apply_schedule_edge(outlet_id, local, edge, now):
+                return
+
+    def _apply_schedule_edge(
+        self, outlet_id: str, local: RegistryOutlet, edge: Edge, now: float
+    ) -> bool:
+        """Return True when a switch call was made (successful or not)."""
+        try:
+            state = self.ha.state(local.entity_id)
+        except HomeAssistantControlError:
+            state = "unavailable"
+        if state == edge.state:
+            self._schedule_failures.pop(outlet_id, None)
+            self.store.mark_schedule_applied(outlet_id, edge.at)
+            self._cache_state(outlet_id, state)
+            return False
+        if state not in {"on", "off"}:
+            # Waiting on an unreadable outlet would hold the lock for the full
+            # confirmation window; try again later instead.
+            self._retry_schedule_later(outlet_id, edge)
+            return False
+        try:
+            if self.ha.set_state(local.entity_id, edge.state) != edge.state:
+                raise HomeAssistantControlError("schedule readback failed")
+        except (HomeAssistantControlError, ValueError) as error:
+            LOGGER.warning(
+                "Scheduled change of %s to %s failed; retrying: %s",
+                local.entity_id,
+                edge.state,
+                error,
+            )
+            self._retry_schedule_later(outlet_id, edge)
+            return True
+        LOGGER.info("Scheduled change applied: %s is %s", local.entity_id, edge.state)
+        self._schedule_failures.pop(outlet_id, None)
+        self.store.mark_schedule_applied(outlet_id, edge.at)
+        self._cache_state(outlet_id, edge.state)
+        return True
+
+    def _retry_schedule_later(self, outlet_id: str, edge: Edge) -> None:
+        """Schedule the next attempt from the clock after this one finished."""
+        prior_edge, count = self._schedule_failures.get(outlet_id, (edge.at, 0))
+        count = count + 1 if prior_edge == edge.at else 1
+        self._schedule_failures[outlet_id] = (edge.at, count)
+        delay = min(SCHEDULE_RETRY_MAX_SECONDS, SCHEDULE_RETRY_SECONDS * 2 ** (count - 1))
+        self.store.retry_schedule(outlet_id, edge.at, self.clock() + delay)
+
+    def refresh_states(self) -> None:
+        """Read each inventory outlet's state for the exchange. No lock held."""
+        for outlet in tuple(self.inventory):
+            try:
+                state = self.ha.state(outlet.entity_id)
+            except HomeAssistantControlError:
+                state = "unavailable"
+            self._cache_state(outlet.outlet_id, state)
+
+    def refresh_registry(self) -> None:
+        """Refresh names and the time zone; failures keep the last good values."""
+        if self.time_zone_provider is not None:
+            try:
+                name = self.time_zone_provider()
+            except Exception:
+                LOGGER.warning("Home Assistant time zone is unavailable; keeping the last one")
+                name = None
+            if name is not None and zone(name) is not None and name != self._time_zone:
+                with self._state_lock:
+                    # Edges applied in the old zone say nothing about the new
+                    # one: apply each schedule's current state once again.
+                    changed_zone = zone(self._time_zone) is not None
+                    self.store.set_time_zone(name, reset_progress=changed_zone)
+                    self._time_zone = name
+                    self._schedule_failures.clear()
+        if self.inventory_discoverer is not None:
+            try:
+                discovered = self.inventory_discoverer(tuple(self.inventory))
+            except Exception:
+                LOGGER.warning("Home Assistant registry refresh failed; keeping the last inventory")
+                return
+            with self._state_lock:
+                self.inventory = discovered
+                self.store.replace_inventory(discovered, self.clock())
+
+    def _reported_states(self) -> dict[str, str]:
+        mono = self.monotonic()
+        with self._cache_lock:
+            return {
+                outlet_id: state if mono - read_at <= STATE_MAX_AGE_SECONDS else "unknown"
+                for outlet_id, (state, read_at) in self._states.items()
+            }
+
     def _restore_items(self, tank_id: str, *, now: float, immediate: bool, only_outlet_ids: set[str] | None = None) -> tuple[bool, bool]:
         obligations = list(self.store.obligations(tank_id))
         target = [item for item in obligations if only_outlet_ids is None or item["outlet_id"] in only_outlet_ids]
@@ -518,6 +724,11 @@ class ControlService:
                 complete = False
                 continue
             local = inventory[str(item["outlet_id"])]
+            # A scheduled outlet returns to its schedule's current state; any
+            # other outlet returns to its captured baseline exactly as before.
+            target, edge = self._restore_target(
+                str(item["outlet_id"]), str(item["baseline"]), now
+            )
             try:
                 state = self.ha.state(local.entity_id)
             except HomeAssistantControlError:
@@ -526,18 +737,25 @@ class ControlService:
                 (
                     item["result"] is None
                     and item["intent"] is not None
-                    and item["intent"] != item["baseline"]
+                    and item["intent"] != target
                 )
                 or item["error_code"] == "restore_failed"
             )
-            if state == item["baseline"] and not unresolved_write:
+            if state == target and not unresolved_write:
                 self.store.mark_result(tank_id, item["outlet_id"], "restored")
+                self._schedule_restored(str(item["outlet_id"]), edge)
                 changed = True
                 continue
             if item["error_code"] == "external_change":
                 complete = False
                 continue
-            if item["baseline"] == "off":
+            # An outlet that should be off but is on was switched by someone
+            # else. A scheduled outlet whose off write was never confirmed is
+            # written again instead.
+            if target == "off" and (
+                edge is None
+                or (item["result"] in {"off", "preserved"} and state == "on")
+            ):
                 self.store.mark_result(
                     tank_id,
                     item["outlet_id"],
@@ -553,7 +771,7 @@ class ControlService:
                 changed = True
                 continue
             pump_id = item["requires_pump_outlet_id"]
-            if pump_id:
+            if pump_id and target == "on":
                 pump_local = inventory.get(str(pump_id))
                 try:
                     pump_state = "unavailable" if pump_local is None else self.ha.state(pump_local.entity_id)
@@ -566,9 +784,11 @@ class ControlService:
                     continue
             try:
                 self.store.mark_restore_pending(tank_id, item["outlet_id"])
-                if self.ha.set_state(local.entity_id, item["baseline"]) != item["baseline"]:
+                if self.ha.set_state(local.entity_id, target) != target:
                     raise HomeAssistantControlError("restore readback failed")
                 self.store.mark_result(tank_id, item["outlet_id"], "restored")
+                self._schedule_restored(str(item["outlet_id"]), edge)
+                self._cache_state(str(item["outlet_id"]), target)
                 changed = True
             except HomeAssistantControlError:
                 complete = False
@@ -717,7 +937,7 @@ class ControlService:
     def tick(self) -> None:
         with self._state_lock:
             now = self.clock()
-            self._clock_safe(now)
+            clock_safe = self._clock_safe(now)
             for original in list(self.store.sessions()):
                 session = next((row for row in self.store.sessions() if row["tank_id"] == original["tank_id"]), None)
                 if session is None:
@@ -755,16 +975,26 @@ class ControlService:
                     now=now,
                     immediate=session["phase"] in {"starting", "switching", "recovery_required"} or session["mode"] == "normal",
                 )
+            # Schedules run after every Tank Mode obligation had its turn, at
+            # the current time since restores may have waited on readback.
+            self._run_schedules(self.clock(), clock_safe)
 
     def _exchange_payload(self) -> dict[str, object]:
         with self._state_lock:
+            states = self._reported_states()
             return {
-                "protocolVersion": 1,
+                "protocolVersion": PROTOCOL_VERSION,
                 "installationId": self.installation_id,
                 "reportSequence": self.store.report_sequence(),
                 "knownConfigRevision": self.store.config_revision(),
+                # Only the revision durably committed to SQLite is acknowledged.
+                "knownSchedulesRevision": self.store.schedules_revision(),
+                "timeZone": self._time_zone if zone(self._time_zone) is not None else None,
                 "acknowledgedCommandIds": [],
-                "inventory": [outlet.wire() for outlet in self.inventory],
+                "inventory": [
+                    outlet.wire_v2(states.get(outlet.outlet_id, "unknown"))  # type: ignore[arg-type]
+                    for outlet in self.inventory
+                ],
                 "results": self.store.reports(),
             }
 
@@ -778,6 +1008,12 @@ class ControlService:
             )
             if response["configuration"] is not None:
                 self.store.install_config(response["configRevision"], response["configuration"], self.clock())
+            if response.get("schedules") is not None:
+                self.store.install_schedules(
+                    int(response["schedulesRevision"]),
+                    parse_schedule_list(response["schedules"]),
+                    self.clock(),
+                )
             server_now = datetime.fromisoformat(response["serverTime"].replace("Z", "+00:00")).timestamp()
             for raw in response["commands"]:
                 self.accept(ControlCommand.from_wire(raw), server_now)
@@ -791,10 +1027,24 @@ class ControlService:
                 LOGGER.exception("Local control reconciliation failed; retrying")
             self.stop.wait(self.scheduler_interval)
 
+    def _refresher_loop(self) -> None:
+        next_registry = 0.0
+        while not self.stop.is_set():
+            try:
+                if time.monotonic() >= next_registry:
+                    next_registry = time.monotonic() + self.registry_refresh_interval
+                    self.refresh_registry()
+                self.refresh_states()
+            except Exception:
+                LOGGER.exception("Outlet refresh failed; retrying")
+            self.stop.wait(self.state_refresh_interval)
+
     def run(self) -> None:
         self.store.backup_health_check()
         scheduler = threading.Thread(target=self._scheduler_loop, name="waterlog-control-scheduler", daemon=True)
         scheduler.start()
+        refresher = threading.Thread(target=self._refresher_loop, name="waterlog-outlet-refresher", daemon=True)
+        refresher.start()
         backoff = 2.0
         try:
             while not self.stop.is_set():
@@ -811,3 +1061,4 @@ class ControlService:
         finally:
             self.stop.set()
             scheduler.join(timeout=5)
+            refresher.join(timeout=5)

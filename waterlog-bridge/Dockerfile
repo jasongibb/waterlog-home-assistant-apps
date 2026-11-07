@@ -19,6 +19,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY src/ /app/
 COPY run.sh /run.sh
-RUN pip install --no-cache-dir websocket-client==1.8.0 && chmod 0755 /run.sh
+# Alpine has no system time zone database; zoneinfo falls back to tzdata.
+RUN pip install --no-cache-dir websocket-client==1.8.0 tzdata==2025.2 && chmod 0755 /run.sh
 
 ENTRYPOINT ["/run.sh"]

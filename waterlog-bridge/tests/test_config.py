@@ -95,6 +95,45 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "control_entities and"):
             self.load(options)
 
+    def test_control_strips_enable_control_without_entities(self) -> None:
+        options = valid_options()
+        options.update(
+            {
+                "waterlog_credential": None,
+                "streams": [],
+                "waterlog_control_credential": "wl_ctl_separate-test-credential",
+                "control_entities": [],
+                "control_strips": [" Pea Puffer Power Strip ", "device-strip-2"],
+            }
+        )
+        config = self.load(options)
+        self.assertTrue(config.control_enabled)
+        self.assertEqual(
+            config.control_strips, ("Pea Puffer Power Strip", "device-strip-2")
+        )
+
+    def test_control_strips_are_validated(self) -> None:
+        base = valid_options()
+        base["waterlog_control_credential"] = "wl_ctl_separate-test-credential"
+        cases = [
+            (["Strip", "Strip"], "unique"),
+            ([""], "device name or ID"),
+            ([7], "device name or ID"),
+            (["bad\nname"], "device name or ID"),
+            ([f"Strip {index}" for index in range(17)], "at most 16"),
+            ("Strip", "at most 16"),
+        ]
+        for value, message in cases:
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ConfigError, message):
+                    self.load({**base, "control_strips": value})
+
+    def test_control_strips_require_the_control_credential(self) -> None:
+        options = valid_options()
+        options["control_strips"] = ["Pea Puffer Power Strip"]
+        with self.assertRaisesRegex(ConfigError, "control_entities and control_strips"):
+            self.load(options)
+
     def test_removed_hydros_options_do_not_change_home_assistant_config(self) -> None:
         options = valid_options()
         options.update(

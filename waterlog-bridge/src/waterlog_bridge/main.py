@@ -16,7 +16,7 @@ from .control_client import ControlClient
 from .control_models import RegistryOutlet
 from .control_service import ControlService
 from .control_store import ControlStore, ControlStoreError
-from .ha_registry import RegistryError, discover_allowlisted
+from .ha_registry import RegistryError, discover_outlets
 from .home_assistant import HomeAssistantClient
 from .home_assistant_control import HomeAssistantControl
 from .logging_utils import configure_logging
@@ -124,6 +124,17 @@ def main() -> int:
                 control_store.set_meta("recovery_required", "1")
                 control_store.db.commit()
 
+            def discover_control_inventory(
+                pinned: tuple[RegistryOutlet, ...],
+            ) -> tuple[RegistryOutlet, ...]:
+                # Network only: safe to call from the background refresher.
+                return discover_outlets(
+                    supervisor_token,
+                    config.control_entities,
+                    config.control_strips,
+                    pinned=pinned,
+                )
+
             def refresh_control_inventory() -> tuple[RegistryOutlet, ...]:
                 pinned = tuple(
                     RegistryOutlet(
@@ -136,27 +147,27 @@ def main() -> int:
                         row["entity_id"],
                         row["label"],
                         row["configured_entity_id"] or row["entity_id"],
+                        row["strip_name"],
                     )
                     for row in control_store.inventory()
                 )
-                discovered = discover_allowlisted(
-                    supervisor_token,
-                    config.control_entities,
-                    pinned=pinned,
-                )
+                discovered = discover_control_inventory(pinned)
                 control_store.replace_inventory(discovered, time.time())
                 return discovered
 
             inventory = refresh_control_inventory()
+            home_assistant = HomeAssistantControl(
+                supervisor_token, timeout_seconds=config.request_timeout_seconds
+            )
             ControlService(
                 control_store,
                 ControlClient(config.waterlog_url, config.control_credential or ""),
-                HomeAssistantControl(
-                    supervisor_token, timeout_seconds=config.request_timeout_seconds
-                ),
+                home_assistant,
                 installation_id,
                 inventory,
                 inventory_provider=refresh_control_inventory,
+                inventory_discoverer=discover_control_inventory,
+                time_zone_provider=home_assistant.time_zone,
                 stop_event=stop_event,
             ).run()
     except (ControlStoreError, RegistryError):

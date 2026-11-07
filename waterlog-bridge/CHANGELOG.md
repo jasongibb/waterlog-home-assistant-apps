@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0
+
+- Add the `control_strips` option. List a power strip by its Home Assistant
+  device name or device ID and every enabled outlet switch on it (and on its
+  child devices) appears in Waterlog with its Home Assistant name, its strip
+  name and its current on or off state. `control_entities` keeps working and
+  merges with strip outlets.
+- Run outlet schedules set in Waterlog under **Settings → Outlets**. The Bridge
+  stores installed schedules in `/data/control.sqlite3` and switches outlets at
+  each scheduled change in Home Assistant's time zone, also while Waterlog or
+  the Internet is unreachable. Missed changes after a restart apply only the
+  latest one; a failed change is retried after 30 seconds, backing off to every
+  5 minutes while the outlet keeps failing.
+- A manual switch in Home Assistant or the Tapo app stays until the next
+  scheduled change.
+- When a Tank Mode ends, a scheduled outlet goes to its schedule's current
+  state instead of its state before the mode. Outlets without a schedule are
+  restored exactly as before, and schedules never switch an outlet that a Tank
+  Mode is using.
+- Speak control protocol version 2: report each outlet's state and strip name,
+  Home Assistant's time zone and the installed schedule revision.
+- Bundle the `tzdata` time zone database in the image.
+
 ## 0.3.3
 
 - Allow 15 seconds for Home Assistant to confirm an outlet change after an

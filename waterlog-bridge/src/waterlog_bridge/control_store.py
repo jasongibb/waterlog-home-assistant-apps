@@ -85,6 +85,10 @@ class ControlStore:
           unique_id TEXT NOT NULL,entity_id TEXT NOT NULL,label TEXT NOT NULL,
           observed_at REAL NOT NULL,position INTEGER NOT NULL DEFAULT 0,
           configured_entity_id TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS outlet_schedules(
+          outlet_id TEXT PRIMARY KEY,weekdays INTEGER NOT NULL,
+          on_at TEXT NOT NULL,off_at TEXT NOT NULL,installed_at REAL NOT NULL,
+          last_edge_at REAL,retry_edge_at REAL,retry_at REAL);
         COMMIT;
         """
         )
@@ -106,6 +110,7 @@ class ControlStore:
         self._ensure_column(
             "local_inventory", "configured_entity_id", "TEXT NOT NULL DEFAULT ''"
         )
+        self._ensure_column("local_inventory", "strip_name", "TEXT")
         self._backfill_report_sequences()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
@@ -168,6 +173,88 @@ class ControlStore:
 
     def config_revision(self) -> int:
         return int(self.get_meta("config_revision") or 0)
+
+    def install_schedules(
+        self, revision: int, schedules: Iterable[Any], now: float
+    ) -> None:
+        """Replace the installed schedule set and its revision in one commit.
+
+        An unchanged schedule keeps its edge progress. A new or changed one
+        has no applied edge, so the runner applies its current state once.
+        """
+        items = list(schedules)
+        with self.db:
+            existing = {
+                str(row["outlet_id"]): row
+                for row in self.db.execute("SELECT * FROM outlet_schedules")
+            }
+            keep = {item.outlet_id for item in items}
+            for outlet_id in set(existing) - keep:
+                self.db.execute(
+                    "DELETE FROM outlet_schedules WHERE outlet_id=?", (outlet_id,)
+                )
+            for item in items:
+                schedule = item.schedule
+                prior = existing.get(item.outlet_id)
+                if prior is not None and (
+                    int(prior["weekdays"]),
+                    str(prior["on_at"]),
+                    str(prior["off_at"]),
+                ) == (schedule.weekdays, schedule.on_at, schedule.off_at):
+                    continue
+                self.db.execute(
+                    """INSERT OR REPLACE INTO outlet_schedules(
+                    outlet_id,weekdays,on_at,off_at,installed_at,
+                    last_edge_at,retry_edge_at,retry_at)
+                    VALUES(?,?,?,?,?,NULL,NULL,NULL)""",
+                    (
+                        item.outlet_id,
+                        schedule.weekdays,
+                        schedule.on_at,
+                        schedule.off_at,
+                        now,
+                    ),
+                )
+            self.set_meta("schedules_revision", str(revision))
+
+    def schedules_revision(self) -> int:
+        return int(self.get_meta("schedules_revision") or 0)
+
+    def schedules(self) -> list[sqlite3.Row]:
+        return list(self.db.execute("SELECT * FROM outlet_schedules ORDER BY outlet_id"))
+
+    def schedule(self, outlet_id: str) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT * FROM outlet_schedules WHERE outlet_id=?", (outlet_id,)
+        ).fetchone()
+
+    def mark_schedule_applied(self, outlet_id: str, edge_at: float) -> None:
+        with self.db:
+            self.db.execute(
+                """UPDATE outlet_schedules SET last_edge_at=?,retry_edge_at=NULL,
+                retry_at=NULL WHERE outlet_id=?""",
+                (edge_at, outlet_id),
+            )
+
+    def retry_schedule(self, outlet_id: str, edge_at: float, retry_at: float) -> None:
+        with self.db:
+            self.db.execute(
+                "UPDATE outlet_schedules SET retry_edge_at=?,retry_at=? WHERE outlet_id=?",
+                (edge_at, retry_at, outlet_id),
+            )
+
+    def time_zone(self) -> str | None:
+        return self.get_meta("time_zone")
+
+    def set_time_zone(self, name: str, *, reset_progress: bool = False) -> None:
+        """Store the zone; on a zone change also forget applied edges in one commit."""
+        with self.db:
+            self.set_meta("time_zone", name)
+            if reset_progress:
+                self.db.execute(
+                    """UPDATE outlet_schedules SET last_edge_at=NULL,
+                    retry_edge_at=NULL,retry_at=NULL"""
+                )
 
     def accepted(self, command_id: str) -> bool:
         return (
@@ -506,8 +593,9 @@ class ControlStore:
             self.db.executemany(
                 """INSERT INTO local_inventory(
                 outlet_id,registry_entry_id,platform,config_entry_id,device_id,
-                unique_id,entity_id,label,observed_at,position,configured_entity_id)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                unique_id,entity_id,label,observed_at,position,configured_entity_id,
+                strip_name)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     (
                         item.outlet_id,
@@ -521,6 +609,7 @@ class ControlStore:
                         now,
                         position,
                         item.configured_entity_id or item.entity_id,
+                        getattr(item, "strip_name", None),
                     )
                     for position, item in enumerate(items)
                 ),

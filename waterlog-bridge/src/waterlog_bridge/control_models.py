@@ -1,4 +1,4 @@
-"""Strict v1 tank-mode control wire models."""
+"""Strict tank-mode control wire models (protocol version 2)."""
 
 from __future__ import annotations
 
@@ -174,6 +174,7 @@ class RegistryOutlet:
     entity_id: str
     label: str
     configured_entity_id: str | None = None
+    strip_name: str | None = None
 
     def pinned_identity(self) -> tuple[str, str, str, str, str]:
         return (
@@ -195,6 +196,9 @@ class RegistryOutlet:
             "entityId": self.entity_id,
             "label": self.label,
         }
+
+    def wire_v2(self, state: OutletState) -> dict[str, object]:
+        return {**self.wire(), "stripName": self.strip_name, "state": state}
 
 
 def require_wire_object(value: object, keys: set[str]) -> dict[str, Any]:

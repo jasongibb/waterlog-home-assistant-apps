@@ -185,17 +185,34 @@ def load_config(path: str | Path) -> BridgeConfig:
         if value.strip() in control_entities:
             raise ConfigError("control entity IDs must be unique")
         control_entities.append(value.strip())
+    raw_control_strips = options.get("control_strips", [])
+    if not isinstance(raw_control_strips, list) or len(raw_control_strips) > 16:
+        raise ConfigError("control_strips must contain at most 16 power strips")
+    control_strips: list[str] = []
+    for index, value in enumerate(raw_control_strips):
+        if (
+            not isinstance(value, str)
+            or not 1 <= len(value.strip()) <= 255
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        ):
+            raise ConfigError(
+                f"control_strips[{index}] must be a Home Assistant device name or ID"
+            )
+        if value.strip() in control_strips:
+            raise ConfigError("control strips must be unique")
+        control_strips.append(value.strip())
     if credential and not streams:
         raise ConfigError("at least one stream is required with waterlog_credential")
     if streams and not credential:
         raise ConfigError("waterlog_credential is required with telemetry streams")
-    if bool(control_entities) != bool(control_credential):
+    if bool(control_entities or control_strips) != bool(control_credential):
         raise ConfigError(
-            "control_entities and waterlog_control_credential must be configured together"
+            "control_entities and control_strips need waterlog_control_credential, "
+            "and the credential needs at least one control entity or strip"
         )
-    if not streams and not control_entities:
+    if not streams and not control_entities and not control_strips:
         raise ConfigError(
-            "configure telemetry streams or explicitly allowlisted control entities"
+            "configure telemetry streams or explicitly listed control entities or strips"
         )
 
     log_level = options.get("log_level", "INFO")
@@ -208,6 +225,7 @@ def load_config(path: str | Path) -> BridgeConfig:
         streams=tuple(streams),
         control_credential=control_credential,
         control_entities=tuple(control_entities),
+        control_strips=tuple(control_strips),
         sample_interval_seconds=_integer(
             options, "sample_interval_seconds", 300, 300, 300
         ),

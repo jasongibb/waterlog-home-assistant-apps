@@ -6,6 +6,9 @@ import json
 from typing import Any
 
 from .http import HttpTransport, TransportError
+from .schedules import parse_schedule_list
+
+PROTOCOL_VERSION = 2
 
 
 class ControlAuthenticationError(PermissionError):
@@ -56,11 +59,14 @@ class ControlClient:
             "recoveryRequired",
             "recoveryTankIds",
             "reportSequenceFloor",
+            "schedulesRevision",
+            "schedules",
         }
         if (
             not isinstance(value, dict)
             or set(value) != required
-            or value["protocolVersion"] != 1
+            or isinstance(value["protocolVersion"], bool)
+            or value["protocolVersion"] != PROTOCOL_VERSION
             or not isinstance(value["commands"], list)
             or len(value["commands"]) > 32
             or not isinstance(value["recoveryTankIds"], list)
@@ -69,6 +75,14 @@ class ControlClient:
             or isinstance(value["reportSequenceFloor"], bool)
             or not isinstance(value["reportSequenceFloor"], int)
             or value["reportSequenceFloor"] < 0
+            or isinstance(value["schedulesRevision"], bool)
+            or not isinstance(value["schedulesRevision"], int)
+            or value["schedulesRevision"] < 0
         ):
             raise ControlProtocolError("invalid control response")
+        if value["schedules"] is not None:
+            try:
+                parse_schedule_list(value["schedules"])
+            except ValueError as error:
+                raise ControlProtocolError("invalid control schedules") from error
         return value

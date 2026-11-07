@@ -126,6 +126,21 @@ class HomeAssistantControlTests(unittest.TestCase):
         self.assertEqual(transport.post_timeouts, [21])
         self.assertEqual(transport.get_timeouts, [21])
 
+    def test_time_zone_reads_home_assistant_configuration(self) -> None:
+        transport = SequenceTransport(
+            [
+                response(200, {"time_zone": "America/New_York", "version": "2026.11"}),
+                response(200, {"time_zone": None}),
+                response(500, {}),
+            ]
+        )
+        client = HomeAssistantControl("supervisor-secret", transport=transport)
+
+        self.assertEqual(client.time_zone(), "America/New_York")
+        self.assertIsNone(client.time_zone())
+        with self.assertRaises(HomeAssistantControlError):
+            client.time_zone()
+
 
 if __name__ == "__main__":
     unittest.main()

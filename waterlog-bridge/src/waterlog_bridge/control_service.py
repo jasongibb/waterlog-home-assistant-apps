@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
@@ -36,6 +37,17 @@ STATE_MAX_AGE_SECONDS = 60.0
 
 def _timestamp(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _obligation_report(item: sqlite3.Row, state: str, error: str | None) -> dict[str, object]:
+    return {
+        "outletId": item["outlet_id"],
+        "state": state,
+        "baselineState": item["baseline"],
+        "deadlineAt": _timestamp(float(item["deadline"])),
+        "errorCode": error,
+        "generation": item["generation"],
+    }
 
 
 class ControlService:
@@ -190,14 +202,8 @@ class ControlService:
                 state = self.ha.state(local.entity_id) if identity_valid and local else "unavailable"
             except HomeAssistantControlError:
                 state = "unavailable"
-            reports.append({
-                "outletId": item["outlet_id"],
-                "state": state,
-                "baselineState": item["baseline"],
-                "deadlineAt": _timestamp(float(item["deadline"])),
-                "errorCode": item["error_code"] if identity_valid else "outlet_identity_changed",
-                "generation": item["generation"],
-            })
+            error = item["error_code"] if identity_valid else "outlet_identity_changed"
+            reports.append(_obligation_report(item, state, error))
         return reports
 
     def _queue_report(
@@ -228,7 +234,14 @@ class ControlService:
             "outlets": outlets,
         }, self.clock())
 
-    def _report(self, tank_id: str, *, request_status: str | None, error: str | None = None) -> None:
+    def _report(
+        self,
+        tank_id: str,
+        *,
+        request_status: str | None,
+        error: str | None = None,
+        outlets: list[dict[str, object]] | None = None,
+    ) -> None:
         session = next((row for row in self.store.sessions() if row["tank_id"] == tank_id), None)
         if session is None:
             return
@@ -242,7 +255,7 @@ class ControlService:
             phase=session["phase"],
             request_status=request_status,
             error=error or session["error_code"],
-            outlets=self._outlet_reports(tank_id),
+            outlets=self._outlet_reports(tank_id) if outlets is None else outlets,
         )
 
     def _record_command(self, command: ControlCommand, status: str, now: float) -> None:
@@ -842,13 +855,13 @@ class ControlService:
                 return
         elif command.session_start_command_id != session["session_command_id"] or command.expected_report_sequence != session["last_report_sequence"]:
             return
+        obligations = {
+            str(item["outlet_id"]): item
+            for item in self.store.obligations(command.tank_id)
+        }
         try:
             resolved = self._resolve_plan(command.outlets)
             if session is not None:
-                obligations = {
-                    str(item["outlet_id"]): item
-                    for item in self.store.obligations(command.tank_id)
-                }
                 plan = {item.outlet_id: item for item in command.outlets}
                 if set(obligations) != set(plan) or any(
                     self._obligation_identity(obligations[outlet_id])
@@ -930,7 +943,16 @@ class ControlService:
             error=None,
             now=now,
         )
-        self._report(command.tank_id, request_status="completed")
+        # Publish the same states that passed the identity and state checks.
+        # The admin accepted any differences from the captured baselines.
+        self._report(
+            command.tank_id,
+            request_status="completed",
+            outlets=[
+                _obligation_report(item, states[outlet_id], error=None)
+                for outlet_id, item in obligations.items()
+            ],
+        )
         self.store.resolve_recovery_tank(command.tank_id)
         self.store.remove_session(command.tank_id)
 

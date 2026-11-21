@@ -1,5 +1,5 @@
 name: Waterlog Bridge
-version: "0.4.0"
+version: "0.4.1"
 slug: waterlog_bridge
 description: Send monitoring data and run enrolled tank modes and outlet schedules safely.
 url: https://github.com/jasongibb/waterlog-home-assistant-apps/tree/main/waterlog-bridge

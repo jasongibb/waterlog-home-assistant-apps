@@ -8,6 +8,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from waterlog_bridge.control_models import ControlCommand, ControlOutlet, RegistryOutlet
 from waterlog_bridge.control_client import ControlAuthenticationError
@@ -695,12 +696,20 @@ class ControlExecutorTests(unittest.TestCase):
             expected_report_sequence=session["last_report_sequence"],
         )
 
-        service.accept(recovery, self.now)
+        previous_outlet = self.store.reports()[-1]["outlets"][0]
+        self.assertEqual(previous_outlet["errorCode"], "external_change")
+        with patch.object(ha, "state", side_effect=["off"]) as read_state:
+            service.accept(recovery, self.now)
+        read_state.assert_called_once_with("switch.pump")
 
         self.assertEqual(obligation["baseline"], "on")
         self.assertEqual(ha.writes, [("switch.pump", "off")])
         self.assertEqual(self.store.sessions(), [])
-        self.assertEqual(self.store.reports()[-1]["requestStatus"], "completed")
+        report = self.store.reports()[-1]
+        self.assertEqual(report["requestStatus"], "completed")
+        self.assertEqual(report["phase"], "normal")
+        self.assertIsNone(report["errorCode"])
+        self.assertEqual(report["outlets"], [{**previous_outlet, "state": "off", "errorCode": None}])
 
     def test_originally_off_external_change_survives_ticks_and_restart(self):
         ha = FakeHA({"switch.pump": "off"})

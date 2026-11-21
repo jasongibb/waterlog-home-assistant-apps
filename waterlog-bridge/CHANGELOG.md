@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- After you finish manual Tank Mode recovery, the Bridge reports the outlet
+  states it verified and clears the resolved outlet warnings.
+
 ## 0.4.0
 
 - Add the `control_strips` option. List a power strip by its Home Assistant
